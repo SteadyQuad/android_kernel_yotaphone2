@@ -1,0 +1,57 @@
+/*
+ *
+ * Copyright (C) 2014 Yota Devices Ltd
+ *
+
+ This is an utility to pack YotaPhone logo. Usage:
+
+ 1. compile on a host PC. It's simple: gcc pack-logo.c -a pack-logo
+
+ 2. Convert unpacked logo to packed one:
+pack-logo <epdbootlogo.h >epdbootlogo-packed.h
+
+ 3. The packed logo is included in s1d13522fb.c, please make search for USE_PACKED_LOGO
+
+
+ */
+
+#include <stdio.h>
+
+int zcnt=0;
+int packedLen=0;
+char *comma=" ";
+
+void flushBytes() {
+    if (!zcnt) return;
+    printf("\n%s 0x00, 0x%02X, 0x%02X, 0x%02X\n", comma, zcnt&0xff, (zcnt>>8)&0xff, (zcnt>>16)&0xff);
+    zcnt=0; packedLen+=4; comma=",";
+}
+
+void processByte(int b) {
+    if (b!=0) {
+        flushBytes();
+        printf("%s 0x%02X", comma, b); packedLen++; comma=",";
+    } else {
+        zcnt++;
+    }
+}
+
+int main() {
+    char line[2000];
+    for (;;) {
+        if (!fgets(line,sizeof(line),stdin)) break;
+        int x[12];
+        int nr=sscanf(line," 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x, 0x%x",&x[0],&x[1],&x[2],&x[3],&x[4],&x[5],&x[6],&x[7],&x[8],&x[9],&x[10],&x[11]);
+        if (nr!=12) {
+            flushBytes();
+            fputs(line,stdout);
+        } else {
+            int i;
+            for (i=0; i<12;i++) processByte(x[i]);
+        }
+    }
+    flushBytes();
+    printf("unsigned int epdbootlogo_packed_len = %d;\n", packedLen);
+
+    return 0;
+}

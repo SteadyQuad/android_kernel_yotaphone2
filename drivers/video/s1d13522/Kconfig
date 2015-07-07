@@ -1,0 +1,115 @@
+#
+# Video configuration
+#
+
+menu "Epson S1D13522 Support"
+config EPSON_13522
+        bool "Blackirtual Framebuffer"
+	depends on FB
+	select FB_DEFERRED_IO
+	default y
+
+config FB_EPSON_S1D13522
+        tristate "S1D13522 Support"
+        depends on FB
+        select FB_SYS_FILLRECT
+        select FB_SYS_COPYAREA
+        select FB_SYS_IMAGEBLIT
+        select FB_SYS_FOPS
+       ---help---
+       This enables support for Epson S1D13522 controller.
+
+
+config FB_EPSON_BLACK_AND_WHITE
+        bool "Black & White Virtual Framebuffer"
+        depends on FB_EPSON_S1D13522
+        ---help---
+        Select Yes for Black & White Virtual Framebuffer, No for 8 shades of gray
+
+config FB_EPSON_VIRTUAL_FRAMEBUFFER_FREQ
+        depends on FB_EPSON_S1D13522
+        int "Virtual Framebuffer update frequency (Hz)"
+        default 4
+        ---help---
+        The virtual frame buffer update frequency. This is the frequency of check
+        for a display dirty flaq. If a display dirty flag is set, a frame transfer
+        from virtual frame buffer memory to s1d13522 memory will be performed.
+
+choice
+        prompt "s1d13522 Interface Implementation"
+        depends on FB_EPSON_S1D13522
+        ---help---
+        Select platform specific hardware interface for communicating with the S1D13522 chip.
+
+config FB_EPSON_INDIRECT_INTERFACE
+        bool "Indirect interface"
+         ---help---
+        Select Yes if using a with s1d13522 chip connected via an indirect interface.
+        (The indirect interface consists of two memory mapped registers)
+
+config FB_EPSON_USB
+        bool "EPSON USB interface"
+         ---help---
+        Select Yes if using an Epson USB based development boards.
+        (For the USB interface the /proc interface is mandatory.)
+
+config FB_EPSON_GPIO_GUMSTIX
+        bool "Gumstix + GPIO interface"
+        ---help---
+        Select Yes if porting for the Gumstix/Broadsheet Platform.
+
+config FB_EPSON_SPI
+        bool "EPSON SPI interface"
+        ---help---
+        Select Yes if using Epson SPI interface.
+
+endchoice
+
+config FB_EPSON_PCI
+        bool "EPSON PCI Support"
+        depends on FB_EPSON_S1D13522 && PCI && FB_EPSON_INDIRECT_INTERFACE
+        ---help---
+        Select Yes if using an Epson PCI based development boards, otherwise select No.
+
+
+config FB_EPSON_HRDY_OK
+        bool "The host interface supports HRDY signal"
+        depends on FB_EPSON_S1D13522
+        ---help---
+        Select Yes if the host interface supports HRDY signal, otherwise select No.
+        If the HRDY signal is not present, driver polls the register containing the
+        interface status bit when neccessary. If the interface does support a separate
+        HRDY signal, you must provide your own code.
+
+config FB_EPSON_AUTOBOOT
+        bool "Autoboot support"
+        depends on FB_EPSON_S1D13522
+        ---help---
+        Select Yes if your system contains flash memory programmed for autoboot.
+        This is the recommended way to initialize the s1d13522 chip.
+        Otherwise the initialization data are expected to be provided via the file
+        "s1d13522.h"
+
+config FB_EPSON_PROC
+        bool "Create /proc device files"
+        depends on FB_EPSON_S1D13522
+        ---help---
+        Enables registers i/o using procfs. Useful for debugging.
+        Mandatory for USB interface.
+
+config FB_EPSON_DEBUG_PRINTK
+        bool "Enable printk() debugging text."
+        depends on FB_EPSON_S1D13522
+        ---help---
+        This enables printk() function in video driver.
+        This function writes text to kernel log file when video driver
+        functions are called. Note that printk() functions which display
+        error messages are never disabled.
+
+config FB_EPSON_SHOW_SETTINGS
+        bool "Display configuration settings while compiling"
+        depends on FB_EPSON_S1D13522
+        ---help---
+        At compile time, this shows video configuration settings as warning messages.
+
+endmenu
