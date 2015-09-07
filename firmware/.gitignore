@@ -1,5 +1,6 @@
 *.gen.S
-*.fw
+# disabled to make sure epson/cmds1d13522.fw is included in git
+#*.fw
 *.bin
 *.csp
 *.dsp
