@@ -40,13 +40,6 @@
 #include <linux/of_gpio.h>
 #include <linux/miscdevice.h>
 #include <linux/spinlock.h>
-//#include <linux/clk.h>
-
-//#define pr_err printk
-//#define pr_debug printk
-//#define pr_warning printk
-
-//#define DEBUG_NFC_DRIVER
 
 #define MAX_BUFFER_SIZE	512
 
@@ -57,8 +50,6 @@ struct pn544_dev	{
 	struct mutex		read_mutex;
 	struct i2c_client	*client;
 	struct miscdevice	pn544_device;
-	struct regulator        *regulator ;
-	struct regulator        *regulator_s3 ;
 
 	unsigned int		ven_gpio;
 	unsigned int		firm_gpio;
@@ -100,7 +91,7 @@ static ssize_t pn544_dev_read(struct file *filp, char __user *buf,
 {
 	struct pn544_dev *pn544_dev = filp->private_data;
 	char tmp[MAX_BUFFER_SIZE];
-	int ret, i;
+	int ret;
 
 	if (count > MAX_BUFFER_SIZE)
 		count = MAX_BUFFER_SIZE;
@@ -129,22 +120,19 @@ static ssize_t pn544_dev_read(struct file *filp, char __user *buf,
 	mutex_unlock(&pn544_dev->read_mutex);
 
 	if (ret < 0) {
-		pr_err("%s: i2c_master_recv returned %d\n", __func__, ret);
+		dev_dbg(&pn544_dev->client->dev, "i2c_master_recv returned %d\n",
+			ret);
 		return ret;
 	}
 	if (ret > count) {
-		pr_err("%s: received too many bytes from i2c (%d)\n",
-			__func__, ret);
+		dev_dbg(&pn544_dev->client->dev,
+			"received too many bytes from i2c (%d)\n", ret);
 		return -EIO;
 	}
 	if (copy_to_user(buf, tmp, ret)) {
-		pr_warning("%s : failed to copy to user space\n", __func__);
+		dev_dbg(&pn544_dev->client->dev, "failed to copy to user space\n");
 		return -EFAULT;
 	}
-	for(i = 0; i < ret; i++){
-		printk(" %02X", tmp[i]);
-	}
-
 	return ret;
 
 fail:
@@ -155,13 +143,9 @@ fail:
 static ssize_t pn544_dev_write(struct file *filp, const char __user *buf,
 		size_t count, loff_t *offset)
 {
-	struct pn544_dev  *pn544_dev;
+	struct pn544_dev *pn544_dev;
 	char tmp[MAX_BUFFER_SIZE];
 	int ret;
-
-	#ifdef DEBUG_NFC_DRIVER
-	int i;
-	#endif
 
 	pn544_dev = filp->private_data;
 
@@ -169,46 +153,73 @@ static ssize_t pn544_dev_write(struct file *filp, const char __user *buf,
 		count = MAX_BUFFER_SIZE;
 
 	if (copy_from_user(tmp, buf, count)) {
-		pr_err("%s : failed to copy from user space\n", __func__);
+		dev_dbg(&pn544_dev->client->dev, "failed to copy from user space\n");
 		return -EFAULT;
 	}
 
-	#ifdef DEBUG_NFC_DRIVER
-	printk("%s : writing %zu bytes.\n", __func__, count);
-	printk("DH->NFCC:");
-	for(i = 0; i < count; i++){
-	        printk(" %02X", tmp[i]);
-	}
-	printk("\n");
-	#endif
-
 	/* Write data */
 	ret = i2c_master_send(pn544_dev->client, tmp, count);
+
+	if (ret == -ENOTCONN) {  /* Retry, chip was in standby */
+		usleep_range(6000, 10000);
+		ret = i2c_master_send(pn544_dev->client, tmp, count);
+	}
+
 	if (ret != count) {
-		pr_err("%s : i2c_master_send returned %d\n", __func__, ret);
+		dev_dbg(&pn544_dev->client->dev, "i2c_master_send returned %d\n",
+			ret);
 		ret = -EIO;
 	}
 	return ret;
 }
 
+static int pn544_i2c_device_reset(struct pn544_dev *pn544_p)
+{
+	int ret, old_val, retry = 3;
+	char rset_cmd[] = { 0x05, 0xF9, 0x04, 0x00, 0xC3, 0xE5 };
+	int count = sizeof(rset_cmd);
+
+	old_val = gpio_get_value_cansleep(pn544_p->ven_gpio);
+	if (old_val) {
+		gpio_set_value_cansleep(pn544_p->ven_gpio, 0);
+		usleep_range(10000, 15000);
+	}
+	gpio_set_value_cansleep(pn544_p->ven_gpio, 1);
+
+	/* send reset */
+	while (retry--) {
+		dev_dbg(&pn544_p->client->dev, "Sending reset cmd\n");
+		ret = i2c_master_send(pn544_p->client, rset_cmd, count);
+		if (ret == count) {
+			ret = 0;
+			break;
+		}
+		usleep_range(10000, 15000);
+	}
+
+	if (!retry && ret != count)
+		dev_err(&pn544_p->client->dev, "device not responding\n");
+
+	if (!old_val)
+		gpio_set_value_cansleep(pn544_p->ven_gpio, 0);
+
+	return ret;
+}
+
 static int pn544_dev_open(struct inode *inode, struct file *filp)
 {
-	struct pn544_dev *pn544_dev = container_of(filp->private_data,
-						struct pn544_dev,
-						pn544_device);
-
 	filp->private_data = pn544_dev;
-	pr_debug("%s : %d,%d\n", __func__, imajor(inode), iminor(inode));
-        #ifdef DEBUG_NFC_DRIVER
-        printk("%s: Before setting high :: ven_gpio : %d \n",__func__,gpio_get_value(pn544_dev->ven_gpio));
-        #endif
+	gpio_set_value_cansleep(pn544_dev->ven_gpio, 1);
 
-        gpio_set_value(pn544_dev->ven_gpio, 1);
+	return pn544_i2c_device_reset(pn544_dev);
+}
 
-        #ifdef DEBUG_NFC_DRIVER
-        printk("%s: After setting high :: ven_gpio : %d \n",__func__,gpio_get_value(pn544_dev->ven_gpio));
-        #endif
+static int pn544_dev_close(struct inode *inode, struct file *filp)
+{
+	struct pn544_dev *pn544_dev = filp->private_data;
 
+	gpio_set_value_cansleep(pn544_dev->ven_gpio, 0);
+	gpio_set_value_cansleep(pn544_dev->firm_gpio, 0);
 
 	return 0;
 }
@@ -222,96 +233,176 @@ static long pn544_dev_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 		if (arg == 2) {
 			/* power on with firmware download (requires hw reset)
 			 */
-			printk("%s power on with firmware\n", __func__);
-			gpio_set_value(pn544_dev->ven_gpio, 1);
-			gpio_set_value(pn544_dev->firm_gpio, 1);
+			gpio_set_value_cansleep(pn544_dev->ven_gpio, 1);
+			gpio_set_value_cansleep(pn544_dev->firm_gpio, 1);
 			msleep(10);
-			gpio_set_value(pn544_dev->ven_gpio, 0);
+			gpio_set_value_cansleep(pn544_dev->ven_gpio, 0);
 			msleep(50);
-			gpio_set_value(pn544_dev->ven_gpio, 1);
+			gpio_set_value_cansleep(pn544_dev->ven_gpio, 1);
 			msleep(10);
 		} else if (arg == 1) {
 			/* power on */
-			gpio_set_value(pn544_dev->firm_gpio, 0);
-			gpio_set_value(pn544_dev->ven_gpio, 1);
+			gpio_set_value_cansleep(pn544_dev->firm_gpio, 0);
+			gpio_set_value_cansleep(pn544_dev->ven_gpio, 1);
 			//irq_set_irq_wake(pn544_dev->client->irq, 1);
 			msleep(10);
 		} else  if (arg == 0) {
 			/* power off */
-			gpio_set_value(pn544_dev->firm_gpio, 0);
-			gpio_set_value(pn544_dev->ven_gpio, 0);
+			gpio_set_value_cansleep(pn544_dev->firm_gpio, 0);
+			gpio_set_value_cansleep(pn544_dev->ven_gpio, 0);
 			//irq_set_irq_wake(pn544_dev->client->irq, 0);
 			msleep(10);
 		} else {
-			printk("%s bad arg %ld\n", __func__, arg);
+			dev_dbg(&pn544_dev->client->dev, "bad arg %ld\n", arg);
 			return -EINVAL;
 		}
 		break;
 	default:
-		printk("%s bad ioctl %d\n", __func__, cmd);
+		dev_dbg(&pn544_dev->client->dev, "bad ioctl %d\n", cmd);
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
+static void pn544_i2c_release_resources(struct i2c_client *client)
+{
+	disable_irq(client->irq);
+	free_irq(client->irq, pn544_dev);
 
-static int nxp_pn544_reset(void)
+	if (pn544_dev->irq_gpio)
+		gpio_free(pn544_dev->irq_gpio);
+
+	if (pn544_dev->firm_gpio)
+		gpio_free(pn544_dev->firm_gpio);
+
+	if (pn544_dev->ven_gpio)
+		gpio_free(pn544_dev->ven_gpio);
+
+	pn544_dev->irq_gpio = 0;
+	pn544_dev->firm_gpio = 0;
+	pn544_dev->ven_gpio = 0;
+}
+
+static int pn544_i2c_of_request_resources(struct i2c_client *client)
 {
 	int rc;
+	struct device_node *of_node = client->dev.of_node;
+
+	if (!of_node)
+		return -EINVAL;
+
+	rc = of_get_named_gpio(of_node, "nxp,irq-gpio", 0);
+	if (rc > 0) {
+		pn544_dev->irq_gpio = rc;
+	} else {
+		dev_err(&client->dev,
+			"of_property_read(irq_gpio) fail:%d\n", rc);
+		goto comm_err;
+	}
+
+	rc = of_get_named_gpio(of_node, "nxp,firm-gpio", 0);
+	if (rc > 0) {
+		pn544_dev->firm_gpio = rc;
+	} else {
+		dev_err(&client->dev,
+			"of_property_read(firm_gpio) fail:%d\n", rc);
+		goto comm_err;
+	}
+
+	rc = of_get_named_gpio(of_node, "nxp,ven-gpio", 0);	//8974 mpp7
+	if (rc > 0) {
+		pn544_dev->ven_gpio = rc;
+	} else {
+		dev_err(&client->dev,
+			"of_property_read(ven_gpio) fail:%d\n", rc);
+		goto comm_err;
+	}
+
 	rc = gpio_tlmm_config(GPIO_CFG(pn544_dev->irq_gpio, 0,
 				GPIO_CFG_INPUT, GPIO_CFG_PULL_DOWN,
 				GPIO_CFG_2MA), GPIO_CFG_ENABLE);
-	  if (rc) {
-			printk( "%s: Could not configure nfc gpio %d\n",
-					__func__, pn544_dev->irq_gpio);
-			 return -EIO;
-		   }
+	if (rc) {
+		dev_err(&client->dev, "Could not configure nfc gpio %d\n",
+			pn544_dev->irq_gpio);
+		goto comm_err;
+	}
 
-	 rc = gpio_request(pn544_dev->irq_gpio, "irq_gpio");
-	 if (rc) {
-			printk( "%s: unable to request nfc gpio %d (%d)\n",
-					__func__, pn544_dev->irq_gpio, rc);
-			 return -EIO;
-		    }
+	rc = gpio_request(pn544_dev->irq_gpio, "irq_gpio");
+	if (rc) {
+		dev_err(&client->dev,"unable to request nfc gpio %d (%d)\n",
+			pn544_dev->irq_gpio, rc);
+		goto comm_err;
+	}
 
+	rc = gpio_tlmm_config(GPIO_CFG(pn544_dev->firm_gpio, 0,
+			      GPIO_CFG_OUTPUT, GPIO_CFG_PULL_DOWN,
+			      GPIO_CFG_2MA), GPIO_CFG_ENABLE);
 
-	  rc = gpio_tlmm_config(GPIO_CFG(pn544_dev->firm_gpio, 0,
-				GPIO_CFG_OUTPUT, GPIO_CFG_PULL_DOWN,
-				GPIO_CFG_2MA), GPIO_CFG_ENABLE);
-	  //printk("pn544 config firmgpio pull down\n");
-	  if (rc) {
-			printk( "%s: Could not configure nfc gpio %d\n",
-					__func__, pn544_dev->firm_gpio);
-			 return -EIO;
-		   }
+	if (rc) {
+		dev_err(&client->dev, "Could not configure nfc gpio %d\n",
+			pn544_dev->firm_gpio);
+		goto free_irq_gpio;
+	}
 
-	 rc = gpio_request(pn544_dev->firm_gpio, "firm_gpio");
-	 if (rc) {
-			printk( "%s: unable to request nfc gpio %d (%d)\n",
-					__func__, pn544_dev->firm_gpio, rc);
-			 return -EIO;
-	 }
-     gpio_direction_output(pn544_dev->firm_gpio, 0);
-     /*ven gpio out*/
-	 rc = gpio_tlmm_config(GPIO_CFG(pn544_dev->ven_gpio, 0,
-	                                   GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL,
-	                                   GPIO_CFG_2MA), GPIO_CFG_ENABLE);
-    //printk("pn544 config vengpio out put no pull\n");
-    if (rc) {
-        printk( "%s: Could not configure nfc gpio %d\n",
-                __func__, pn544_dev->ven_gpio);
-        return -EIO;
-    }
+	rc = gpio_request(pn544_dev->firm_gpio, "firm_gpio");
+	if (rc) {
+		dev_err(&client->dev, "unable to request nfc gpio %d (%d)\n",
+					pn544_dev->firm_gpio, rc);
+		goto free_irq_gpio;
+	}
+
+	gpio_direction_output(pn544_dev->firm_gpio, 0);
+
+	/*ven gpio out*/
+	rc = gpio_tlmm_config(GPIO_CFG(pn544_dev->ven_gpio, 0,
+			      GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL,
+			      GPIO_CFG_2MA), GPIO_CFG_ENABLE);
+
+	if (rc) {
+		dev_err(&client->dev, "Could not configure nfc gpio %d\n",
+			pn544_dev->ven_gpio);
+		goto free_firm_gpio;
+	}
 
 	rc = gpio_request(pn544_dev->ven_gpio, "ven_gpio");
 	if (rc) {
-			printk( "%s: unable to request nfc gpio %d (%d)\n",
-					__func__,pn544_dev->ven_gpio, rc);
-			 return -EIO;
+		dev_err(&client->dev, "unable to request nfc gpio %d (%d)\n",
+			pn544_dev->ven_gpio, rc);
+		goto free_firm_gpio;
 	}
+
 	gpio_direction_output(pn544_dev->ven_gpio, 0);
+
+	/*
+	 * request irq.  the irq is set whenever the chip has data available
+	 * for reading.  it is cleared when all data has been read.
+	 */
+	rc = request_irq(client->irq, pn544_dev_irq_handler,
+			 IRQF_TRIGGER_HIGH, client->name, pn544_dev);
+	if (rc) {
+		dev_err(&client->dev, "Could request  gpio IRQ (%d)\n", rc);
+		goto free_ven_gpio;
+	} else {
+		disable_irq_nosync(client->irq);
+		pn544_dev->irq_enabled = false;
+	}
+
 	return 0;
+
+
+free_ven_gpio:
+	gpio_free(pn544_dev->ven_gpio);
+free_firm_gpio:
+	gpio_free(pn544_dev->firm_gpio);
+free_irq_gpio:
+	gpio_free(pn544_dev->irq_gpio);
+comm_err:
+	pn544_dev->irq_gpio = 0;
+	pn544_dev->firm_gpio = 0;
+	pn544_dev->ven_gpio = 0;
+
+	return rc;
 }
 
 static const struct file_operations pn544_dev_fops = {
@@ -320,6 +411,7 @@ static const struct file_operations pn544_dev_fops = {
 	.read	= pn544_dev_read,
 	.write	= pn544_dev_write,
 	.open	= pn544_dev_open,
+	.release = pn544_dev_close,
 	.unlocked_ioctl  = pn544_dev_ioctl,
 };
 
@@ -328,68 +420,42 @@ static int pn544_probe(struct i2c_client *client, const struct i2c_device_id *id
 {
 	int ret;
 
-	  struct device_node *of_node = NULL;
-	//static struct clk *bb_clk2;  /*added bb_clk2 for nfc , start */
+	if (pn544_dev != NULL) {
+		dev_err(&client->dev,
+			"pn544_probe: multiple devices NOT supported\n");
+		return -ENODEV;
+	}
 
-	printk("pn544_probe(): start\n");
-        if (pn544_dev != NULL)
-	{
-		 printk("pn544_probe: multiple devices NOT supported\n");
-		 ret = -ENODEV;
-		goto err_single_device;
-	 }
-
-	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
-	{
-		pr_err("%s : need I2C_FUNC_I2C\n", __func__);
-		return  -ENODEV;
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
+		dev_err(&client->dev, "need I2C_FUNC_I2C\n");
+		return -ENODEV;
 	}
 
 	/* private data allocation */
 	pn544_dev = kzalloc(sizeof(*pn544_dev), GFP_KERNEL);
 	if (pn544_dev == NULL) {
 		dev_err(&client->dev,
-				"failed to allocate memory for module data\n");
-		ret = -ENOMEM;
-		goto err_exit;
+			"failed to allocate memory for module data\n");
+		return -ENOMEM;
 	}
-
-	pn544_dev->client   = client;
-
-
-   if (client->dev.of_node) {
-
-	of_node = client->dev.of_node;
-
-	ret = of_get_named_gpio(of_node, "nxp,irq-gpio", 0);
-	if (ret>0) {
-		pn544_dev->irq_gpio=ret;
-	} else{
-		printk("pn544_probe: of_property_read(irq_gpio) fail:%d\n",ret);
-		goto err_device_create_failed;
-	}
-
-	ret = of_get_named_gpio(of_node, "nxp,firm-gpio", 0);
-	if (ret>0) {
-		pn544_dev->firm_gpio=ret;
-	} else{
-		printk("pn544_probe: of_property_read(firm_gpio) fail:%d\n",ret);
-		goto err_device_create_failed;
-	}
-
-	ret = of_get_named_gpio(of_node, "nxp,ven-gpio", 0);	//8974 mpp7
-	if (ret>0) {
-		pn544_dev->ven_gpio=ret;
-	} else{
-		printk("pn544_probe: of_property_read(ven_gpio) fail:%d\n",ret);
-		goto err_device_create_failed;
-	}
-
+	pn544_dev->client = client;
 
 	/* init mutex and queues */
 	init_waitqueue_head(&pn544_dev->read_wq);
 	mutex_init(&pn544_dev->read_mutex);
 	spin_lock_init(&pn544_dev->irq_enabled_lock);
+
+	ret = pn544_i2c_of_request_resources(client);
+	if (ret < 0) {
+		dev_err(&client->dev, "Cannot get platform resources\n");
+		goto err_get_device_resources;
+	}
+
+	ret = pn544_i2c_device_reset(pn544_dev);
+	if (ret != 0) {
+		dev_err(&client->dev, "Could not detect nfc pn544 chip\n");
+		goto err_misc_register;
+	}
 
 	pn544_dev->pn544_device.minor = MISC_DYNAMIC_MINOR;
 	pn544_dev->pn544_device.name = "pn544";
@@ -397,77 +463,29 @@ static int pn544_probe(struct i2c_client *client, const struct i2c_device_id *id
 
 	ret = misc_register(&pn544_dev->pn544_device);
 	if (ret) {
-		pr_err("%s : misc_register failed\n", __FILE__);
+		dev_err(&client->dev, "misc_register failed\n");
 		goto err_misc_register;
 	}
 
-	/* request irq.  the irq is set whenever the chip has data available
-	 * for reading.  it is cleared when all data has been read.
-	 */
-
-    ret =nxp_pn544_reset();
-    if (ret < 0) {
-        printk(  "can't reset device\n");
-    //    goto err_device_create_file_failed;
-    }
-
-
-    /*bb_clk2 = clk_get(&client->dev, "bb_clk2");
-	if (IS_ERR(bb_clk2)) {
-		printk(KERN_ERR "%s: Error getting bb_clk2\n", __func__);
-		bb_clk2 = NULL;
-		//return -ENOENT;
-	}
-	else{
-		printk("%s: start prepare bb_clk2\n", __func__);
-        ret = clk_prepare_enable(bb_clk2);
-		if(ret){
-		    printk(KERN_ERR "%s: prepare bb_clk2 failed ret:%d\n", __func__, ret);
-	    }
-	}*/
-
-	pr_info("%s : requesting IRQ %d\n", __func__, client->irq);
-	pn544_dev->irq_enabled = true;
-
-	ret = request_irq(client->irq, pn544_dev_irq_handler,
-			  IRQF_TRIGGER_HIGH, client->name, pn544_dev);
-	if (ret) {
-		printk("request_irq failed\n");
-		goto err_request_irq_failed;
-	}
-
-	pn544_disable_irq(pn544_dev);
 	i2c_set_clientdata(client, pn544_dev);
-	printk("nfc probe is ok\n");
 	return 0;
-   }
-err_request_irq_failed:
-	misc_deregister(&pn544_dev->pn544_device);
+
 err_misc_register:
+	pn544_i2c_release_resources(client);
+err_get_device_resources:
 	mutex_destroy(&pn544_dev->read_mutex);
 	kfree(pn544_dev);
-err_device_create_failed:
-   kfree(pn544_dev);
-   pn544_dev = NULL;
-//err_device_create_file_failed:
- //   device_destroy(pn544_dev_class, MKDEV(pn544_major, pn544_minor));
-err_exit:
-	//gpio_free(platform_data->firm_gpio);
-err_single_device:
+	pn544_dev = NULL;
 	return ret;
-
 }
 
 static int pn544_remove(struct i2c_client *client)
 {
 	pn544_dev = i2c_get_clientdata(client);
-	pn544_disable_irq(pn544_dev);
-	free_irq(client->irq, pn544_dev);
+
 	misc_deregister(&pn544_dev->pn544_device);
+	pn544_i2c_release_resources(client);
 	mutex_destroy(&pn544_dev->read_mutex);
-	gpio_free(pn544_dev->irq_gpio);
-	gpio_free(pn544_dev->ven_gpio);
-	gpio_free(pn544_dev->firm_gpio);
 	kfree(pn544_dev);
 	pn544_dev = NULL;
 

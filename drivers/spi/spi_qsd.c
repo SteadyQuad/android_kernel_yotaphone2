@@ -168,66 +168,15 @@ static inline void msm_spi_free_cs_gpio(struct msm_spi *dd)
 	}
 }
 
-
-/**
- * msm_spi_clk_max_rate: finds the nearest lower rate for a clk
- * @clk the clock for which to find nearest lower rate
- * @rate clock frequency in Hz
- * @return nearest lower rate or negative error value
- *
- * Public clock API extends clk_round_rate which is a ceiling function. This
- * function is a floor function implemented as a binary search using the
- * ceiling function.
- */
-static long msm_spi_clk_max_rate(struct clk *clk, unsigned long rate)
-{
-	long lowest_available, nearest_low, step_size, cur;
-	long step_direction = -1;
-	long guess = rate;
-	int  max_steps = 10;
-
-	cur =  clk_round_rate(clk, rate);
-	if (cur == rate)
-		return rate;
-
-	/* if we got here then: cur > rate */
-	lowest_available =  clk_round_rate(clk, 0);
-	if (lowest_available > rate)
-		return -EINVAL;
-
-	step_size = (rate - lowest_available) >> 1;
-	nearest_low = lowest_available;
-
-	while (max_steps-- && step_size) {
-		guess += step_size * step_direction;
-
-		cur =  clk_round_rate(clk, guess);
-
-		if ((cur < rate) && (cur > nearest_low))
-			nearest_low = cur;
-
-		/*
-		 * if we stepped too far, then start stepping in the other
-		 * direction with half the step size
-		 */
-		if (((cur > rate) && (step_direction > 0))
-		 || ((cur < rate) && (step_direction < 0))) {
-			step_direction = -step_direction;
-			step_size >>= 1;
-		 }
-	}
-	return nearest_low;
-}
-
 static void msm_spi_clock_set(struct msm_spi *dd, int speed)
 {
-	long rate;
 	int rc;
+	long rate;
 
-	rate = msm_spi_clk_max_rate(dd->clk, speed);
+	rate = clk_round_rate(dd->clk, speed);
 	if (rate < 0) {
 		dev_err(dd->dev,
-		"%s: no match found for requested clock frequency:%d",
+			"%s: no match found for requested clock frequency:%d",
 			__func__, speed);
 		return;
 	}
@@ -686,16 +635,6 @@ static void msm_spi_set_spi_config(struct msm_spi *dd, int bpw)
 	if (dd->qup_ver == SPI_QUP_VERSION_NONE)
 		/* flags removed from SPI_CONFIG in QUP version-2 */
 		msm_spi_set_bpw_and_no_io_flags(dd, &spi_config, bpw-1);
-
-	/*
-	 * HS_MODE improves signal stability for spi-clk high rates
-	 * but is invalid in LOOPBACK mode.
-	 */
-	if ((dd->clock_speed >= SPI_HS_MIN_RATE) &&
-	   !(dd->cur_msg->spi->mode & SPI_LOOP))
-		spi_config |= SPI_CFG_HS_MODE;
-	else
-		spi_config &= ~SPI_CFG_HS_MODE;
 
 	writel_relaxed(spi_config, dd->base + SPI_CONFIG);
 }

@@ -64,4 +64,4 @@ endif
 obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP3_I2C)   += cyttsp3_i2c.o
 obj-$(CONFIG_TOUCHSCREEN_CYPRESS_CYTTSP3_SPI)   += cyttsp3_spi.o
 obj-$(CONFIG_GESTURE_DRIVER) += gesture_driver_mod.o
-gesture_driver_mod-y += gesture_front.o gesture_back.o gesture_config.o
+gesture_driver_mod-y += gesture_driver.o gesture_config.o gesture_palmedscreen.o

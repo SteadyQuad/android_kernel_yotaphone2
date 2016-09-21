@@ -76,7 +76,9 @@ struct cyttsp5_mt_data {
 #ifdef CONFIG_FB
 	struct notifier_block fb_notif;
 #endif
-	struct timer_list fs_lock_event_timer;
+    struct timer_list gesture_lock_event_timer;
+    bool lock_gesture_checking;
+    bool discard_events;
 };
 
 void cyttsp5_init_function_ptrs(struct cyttsp5_mt_data *md);

@@ -1380,8 +1380,8 @@ fail_unregister_devices:
 	}
 	return rc;
 }
-//module_init(cyttsp5_loader_init);
-deferred_module_init_0(cyttsp5_loader_init);
+module_init(cyttsp5_loader_init);
+//deferred_module_init_0(cyttsp5_loader_init);
 
 static void __exit cyttsp5_loader_exit(void)
 {

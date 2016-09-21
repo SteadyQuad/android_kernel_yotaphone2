@@ -12,6 +12,7 @@
 #DEFIO
 obj-$(CONFIG_FB_EPSON_S1D13522)		+= epson13522fb.o
 epson13522fb-objs			+= s1d13522fb.o
+epson13522fb-objs			+= s1d13522mem.o
 epson13522fb-objs			+= s1d13522fb_regal.o
 #DEFIO
 

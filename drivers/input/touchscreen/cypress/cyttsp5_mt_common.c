@@ -29,16 +29,19 @@
 #endif
 
 #include <linux/input.h>
-#include "gesture_back.h"
-extern bs_gesture_status_t bsStatus;
-extern struct input_dev *gestureInputDev;
-
-/* Timer value to send LOCK event */
-#define LOCK_EVENT_TIMER (200)
+#include "gesture_driver.h"
 
 static void cyttsp5_mt_lift_all(struct cyttsp5_mt_data *md)
 {
 	int max = md->si->tch_abs[CY_TCH_T].max;
+
+	dev_vdbg(&md->ttsp->dev, "%s: md->num_prv_tch=%d, md->discard_events=%d\n",
+		 __func__, md->num_prv_tch, md->discard_events);
+        if (md->discard_events) {
+            md->discard_events = false;
+            md->num_prv_tch = 0;
+            return;
+        }
 
 	if (md->num_prv_tch != 0) {
 		if (md->mt_function.report_slot_liftoff)
@@ -209,12 +212,19 @@ static void cyttsp5_get_mt_touches(struct cyttsp5_mt_data *md,
 					__func__, t, tch->abs[CY_TCH_E]);
 				goto cyttsp5_get_mt_touches_pr_tch;
 			}
-			if (md->mt_function.input_report)
+			if (md->discard_events) {
+				goto cyttsp5_get_mt_touches_pr_tch;
+			}
+
+			if (md->mt_function.input_report) {
 				md->mt_function.input_report(md->input, sig,
 						t, tch->abs[CY_TCH_O]);
+			}
 			__set_bit(t, ids);
 		}
-
+		if (md->discard_events) {
+			goto cyttsp5_get_mt_touches_pr_tch;
+		}
 		/* all devices: position and pressure fields */
 		for (j = 0; j <= CY_ABS_W_OST; j++) {
 			if (!si->tch_abs[j].report)
@@ -265,6 +275,47 @@ cyttsp5_get_mt_touches_pr_tch:
 	return;
 }
 
+static void cyttsp5_get_lock_gesture(struct cyttsp5_mt_data *md,
+				     struct cyttsp5_touch *tch, int num_cur_tch)
+{
+	struct device *dev = &md->ttsp->dev;
+	struct cyttsp5_sysinfo *si = md->si;
+	int i, new_touch_num = 0;
+	int core_id = !strcmp(md->ttsp->core_id,CY_FRONT_CORE_ID) ? FRONT_TOUCH_ID : BACK_TOUCH_ID;
+
+	if (tch->hdr[CY_TCH_LO]) {
+		dev_dbg(dev, "%s: Large area detected\n", __func__);
+		if (md->pdata->flags & CY_MT_FLAG_NO_TOUCH_ON_LO) {
+			num_cur_tch = 0;
+			if ((core_id == FRONT_TOUCH_ID) && get_lock_gesture_enabled(core_id))
+				send_gesture_event(KEY_FS_GESTURE_LOCK);
+			else if ((core_id == BACK_TOUCH_ID) && get_lock_gesture_enabled(core_id))
+				send_gesture_event(KEY_BS_GESTURE_LOCK);
+		}
+	}
+
+	if (num_cur_tch >= 3) {
+		memset(tch->abs, 0, sizeof(tch->abs));
+		for (i = 0; i < num_cur_tch; i++) {
+			cyttsp5_get_touch(md, tch, si->xy_data +
+					  (i * si->desc.tch_record_size));
+			// Check for the 'last position' touches
+			dev_dbg(dev, "%s: num=%d, liftoff=%d\n", __func__, i, tch->abs[CY_TCH_E]);
+			if (tch->abs[CY_TCH_E] == CY_EV_LIFTOFF) {
+				continue;
+			}
+			new_touch_num++;
+		}
+	}
+	if ((get_lock_gesture_enabled(core_id)) && !md->lock_gesture_checking) {
+		if (new_touch_num >= 3) {
+			mod_timer(&md->gesture_lock_event_timer, jiffies+msecs_to_jiffies(LOCK_EVENT_TIMER));
+			md->lock_gesture_checking = true;
+		}
+        }
+	return;
+}
+
 /* read xy_data for all current touches */
 static int cyttsp5_xy_worker(struct cyttsp5_mt_data *md)
 {
@@ -272,6 +323,7 @@ static int cyttsp5_xy_worker(struct cyttsp5_mt_data *md)
 	struct cyttsp5_sysinfo *si = md->si;
 	struct cyttsp5_touch tch;
 	u8 num_cur_tch;
+	int core_id = !strcmp(md->ttsp->core_id,CY_FRONT_CORE_ID) ? FRONT_TOUCH_ID : BACK_TOUCH_ID;
 
 	cyttsp5_get_touch_hdr(md, &tch, si->xy_mode + 3);
 
@@ -282,44 +334,21 @@ static int cyttsp5_xy_worker(struct cyttsp5_mt_data *md)
 		num_cur_tch = MAX_TOUCH_NUMBER;
 	}
 
-	if(!strcmp(md->ttsp->core_id, CY_FRONT_CORE_ID)) {
-		if (bsStatus.fs_lock_enabled && num_cur_tch >= 3 && bsStatus.sendLockEvent){
-			mod_timer(&md->fs_lock_event_timer, jiffies+msecs_to_jiffies(LOCK_EVENT_TIMER));
-			bsStatus.sendLockEvent = false;
-		}
+        dev_dbg(dev, "xy_work for %s, num_cur_tch=%d\n", md->ttsp->core_id, num_cur_tch);
+        cyttsp5_get_lock_gesture(md, &tch, num_cur_tch);
 
-		if (bsStatus.fs_unlock_enabled && bsStatus.fs_locked) {
-			if (gestureInputDev != NULL) {
-				input_event(gestureInputDev, EV_KEY,KEY_FS_GESTURE_UNLOCK,1);
-				input_event(gestureInputDev, EV_SYN, SYN_REPORT, 0);
-				input_event(gestureInputDev, EV_KEY,KEY_FS_GESTURE_UNLOCK,0);
-				input_event(gestureInputDev, EV_SYN, SYN_REPORT, 0);
-			}
-			bsStatus.fs_locked = false;
+	if (get_unlock_gesture_enabled(core_id) && driver_is_touch_locked(core_id) && num_cur_tch > 0) {
+		if (core_id == FRONT_TOUCH_ID)
+			send_gesture_event(KEY_FS_GESTURE_UNLOCK);
+		else
+			send_gesture_event(KEY_BS_GESTURE_UNLOCK);
+		driver_touch_unlock(core_id);
+		if ((core_id == FRONT_TOUCH_ID) ||
+		    ((core_id == BACK_TOUCH_ID) &&
+		     (!(get_unlock_gesture_enabled(BACK_TOUCH_ID) & BACK_GESTURE_UNLOCK_TAPTAP_TOUCHDOWN)))) {
 			num_cur_tch = 0;
-		}
-	}
-
-	if (tch.hdr[CY_TCH_LO]) {
-		dev_dbg(dev, "%s: Large area detected\n", __func__);
-		if (md->pdata->flags & CY_MT_FLAG_NO_TOUCH_ON_LO) {
-			num_cur_tch = 0;
-			if(!strcmp(md->ttsp->core_id, CY_FRONT_CORE_ID)) {
-				if (gestureInputDev != NULL) {
-					input_event(gestureInputDev, EV_KEY,KEY_FS_GESTURE_LOCK,1);
-					input_event(gestureInputDev, EV_SYN, SYN_REPORT, 0);
-					input_event(gestureInputDev, EV_KEY,KEY_FS_GESTURE_LOCK,0);
-					input_event(gestureInputDev, EV_SYN, SYN_REPORT, 0);
-				}
-			}
-			else if(!strcmp(md->ttsp->core_id, CY_BACK_CORE_ID)) {
-				if (gestureInputDev != NULL) {
-					input_event(gestureInputDev, EV_KEY,KEY_BS_GESTURE_LOCK,1);
-					input_event(gestureInputDev, EV_SYN, SYN_REPORT, 0);
-					input_event(gestureInputDev, EV_KEY,KEY_BS_GESTURE_LOCK,0);
-					input_event(gestureInputDev, EV_SYN, SYN_REPORT, 0);
-				}
-			}
+			// Discard all touch events after unlock gesture until lift-off
+			md->discard_events = true;
 		}
 	}
 
@@ -446,15 +475,11 @@ static int fb_notifier_callback(struct notifier_block *self,
 	if (evdata && evdata->data && md) {
 		if (event == FB_EVENT_BLANK) {
 			blank = evdata->data;
-			if (*blank == FB_BLANK_UNBLANK) {
-				// Do Nothing
-			}
-			else if ((*blank == FB_BLANK_POWERDOWN) || (*blank == FB_BLANK_NORMAL)) {
+			if ((*blank == FB_BLANK_POWERDOWN) || (*blank == FB_BLANK_NORMAL)) {
 				mutex_lock(&md->mt_lock);
 				if (md->si)
 					cyttsp5_mt_lift_all(md);
 				mutex_unlock(&md->mt_lock);
-				bsStatus.fs_locked = true;
 			}
 		}
 	}
@@ -463,26 +488,25 @@ static int fb_notifier_callback(struct notifier_block *self,
 }
 #endif
 
-static void fs_lock_event_callback(unsigned long data)
+static void gesture_lock_event_callback(unsigned long data)
 {
-	struct cyttsp5_mt_data *md =  (struct cyttsp5_mt_data *) data;
+	struct cyttsp5_mt_data *md =  (struct cyttsp5_mt_data *)data;
 	struct cyttsp5_sysinfo *si = md->si;
 	struct cyttsp5_touch tch;
 	u8 num_cur_tch;
-
+	int core_id = !strcmp(md->ttsp->core_id,CY_FRONT_CORE_ID) ? FRONT_TOUCH_ID : BACK_TOUCH_ID;
 	if(md) {
 		cyttsp5_get_touch_hdr(md, &tch, si->xy_mode + 3);
 		num_cur_tch = tch.hdr[CY_TCH_NUM];
 	}
 
-	if (gestureInputDev != NULL && num_cur_tch >= 3) {
-		input_event(gestureInputDev, EV_KEY,KEY_FS_GESTURE_LOCK,1);
-		input_event(gestureInputDev, EV_SYN, SYN_REPORT, 0);
-		input_event(gestureInputDev, EV_KEY,KEY_FS_GESTURE_LOCK,0);
-		input_event(gestureInputDev, EV_SYN, SYN_REPORT, 0);
+	if (num_cur_tch >= 3) {
+		if ((core_id == FRONT_TOUCH_ID) && get_lock_gesture_enabled(FRONT_TOUCH_ID))
+			send_gesture_event(KEY_FS_GESTURE_LOCK);
+		else if((core_id == BACK_TOUCH_ID) && get_lock_gesture_enabled(BACK_TOUCH_ID))
+			send_gesture_event(KEY_BS_GESTURE_LOCK);
 	}
-
-	bsStatus.sendLockEvent = true;
+        md->lock_gesture_checking = false;
 }
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -693,7 +717,7 @@ static int cyttsp5_mt_release(struct cyttsp5_device *ttsp)
 
 	pm_runtime_suspend(dev);
 	pm_runtime_disable(dev);
-	del_timer(&md->fs_lock_event_timer);
+	del_timer(&md->gesture_lock_event_timer);
 	dev_set_drvdata(dev, NULL);
 	kfree(md);
 	return 0;
@@ -776,7 +800,9 @@ static int cyttsp5_mt_probe(struct cyttsp5_device *ttsp)
 		dev_err(dev, "Unable to register fb_notifier: %d\n",
 			rc);
 #endif
-	setup_timer(&md->fs_lock_event_timer, fs_lock_event_callback, (unsigned long)md);
+	setup_timer(&md->gesture_lock_event_timer, gesture_lock_event_callback, (unsigned long)md);
+        md->lock_gesture_checking = false;
+	md->discard_events = false;
 
 	return 0;
 

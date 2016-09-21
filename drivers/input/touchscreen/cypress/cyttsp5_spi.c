@@ -311,8 +311,8 @@ static int __init cyttsp5_spi_init(void)
 
 	return err;
 }
-//module_init(cyttsp5_spi_init);
-deferred_module_init_0(cyttsp5_spi_init);
+module_init(cyttsp5_spi_init);
+//deferred_module_init_0(cyttsp5_spi_init);
 
 static void __exit cyttsp5_spi_exit(void)
 {

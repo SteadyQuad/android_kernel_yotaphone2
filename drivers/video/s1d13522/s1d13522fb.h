@@ -19,7 +19,7 @@
 #include <linux/fb.h>
 
 #include "s1d13522ioctl.h"
-//#include S1D13xxxFB_INCLUDE
+#include "s1d13522mem.h"
 #include "s1d13522.h"
 
 #ifndef FALSE
@@ -78,6 +78,7 @@ struct s1d13522fb_par {
 	wait_queue_head_t vsync_wait;
        int vsync_flag;
        int vsync_timeout;
+	struct s1d13522_mem_cache *malloc_cache;
 };
 
 // board specific routines

@@ -943,7 +943,7 @@
                 interrupt-names = "spi_irq", "spi_bam_irq";
                 interrupts = <0 102 0>, <0 239 0>;
 
-                spi-max-frequency = <48000000>;
+                spi-max-frequency = <50000000>;
                 qcom,gpio-mosi = <&msmgpio 45 0>;
                 qcom,gpio-miso = <&msmgpio 46 0>;
                 qcom,gpio-clk  = <&msmgpio 48 0>;
@@ -959,7 +959,7 @@
 		s1d13522@0 {
 			compatible = "qcom,s1d13522";
 			//compatible = "qcom,spi-test";
-			spi-max-frequency = <48000000>;
+			spi-max-frequency = <100000000>;
 			reg = <0>;
 			//qcom,epd1p8-supply = <&pm8941_epd_r2>;
 			//qcom,epd3p0-supply = <&pm8941_epd_r1>;
@@ -2135,7 +2135,7 @@
 		reg = <0xf9017000 0x1000>;
 		interrupts = <0 3 0>, <0 4 0>;
 		qcom,bark-time = <11000>;
-		qcom,pet-time = <10000>;
+		qcom,pet-time = <8000>;
 		qcom,ipi-ping;
 	};
 

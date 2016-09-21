@@ -1698,7 +1698,7 @@ void *def_taiko_mbhc_cal(void)
 #undef S
 #define S(X, Y) ((WCD9XXX_MBHC_CAL_PLUG_TYPE_PTR(taiko_cal)->X) = (Y))
 	S(v_no_mic, 30);
-	S(v_hs_max, 2400);
+	S(v_hs_max, 2700);
 #undef S
 #define S(X, Y) ((WCD9XXX_MBHC_CAL_BTN_DET_PTR(taiko_cal)->X) = (Y))
 	S(c[0], 62);
@@ -1716,24 +1716,24 @@ void *def_taiko_mbhc_cal(void)
 	btn_low = wcd9xxx_mbhc_cal_btn_det_mp(btn_cfg, MBHC_BTN_DET_V_BTN_LOW);
 	btn_high = wcd9xxx_mbhc_cal_btn_det_mp(btn_cfg,
 					       MBHC_BTN_DET_V_BTN_HIGH);
-	btn_low[0] = -50;
-	btn_high[0] = 20;
-	btn_low[1] = 21;
-	btn_high[1] = 61;
-	btn_low[2] = 62;
-	btn_high[2] = 104;
-	btn_low[3] = 105;
-	btn_high[3] = 148;
-//	btn_low[4] = 149;
-//	btn_high[4] = 189;
-//	btn_low[5] = 190;
-	btn_low[5] = 149;
-	btn_high[5] = 290;
-//	btn_low[6] = 229;
-//	btn_high[6] = 269;
-//	btn_low[7] = 270;
-	btn_low[7] = 291;
-	btn_high[7] = 500;
+
+        btn_low[0] = -700;
+        btn_high[0] = 50;
+        btn_low[1] = 51;
+        btn_high[1] = 67;
+        btn_low[2] = 68;
+        btn_high[2] = 104;
+        btn_low[3] = 105;
+        btn_high[3] = 148;
+        btn_low[4] = 149;
+        btn_high[4] = 151;
+        btn_low[5] = 152;
+        btn_high[5] = 259;
+        btn_low[6] = 260;
+        btn_high[6] = 274;
+        btn_low[7] = 275;
+        btn_high[7] = 800;
+
 	n_ready = wcd9xxx_mbhc_cal_btn_det_mp(btn_cfg, MBHC_BTN_DET_N_READY);
 	n_ready[0] = 80;
 	n_ready[1] = 68;

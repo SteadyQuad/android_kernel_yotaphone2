@@ -469,8 +469,8 @@ fail_unregister_devices:
 	}
 	return rc;
 }
-//module_init(cyttsp5_debug_init);
-deferred_module_init_0(cyttsp5_debug_init);
+module_init(cyttsp5_debug_init);
+//deferred_module_init_0(cyttsp5_debug_init);
 
 static void __exit cyttsp5_debug_exit(void)
 {

@@ -20,7 +20,6 @@
  * Contact Cypress Semiconductor at www.cypress.com <ttdrivers@cypress.com>
  *
  */
-
 #include <linux/cyttsp5_bus.h>
 
 #include <linux/debugfs.h>
@@ -40,7 +39,7 @@
 
 #include <linux/cyttsp5_core.h>
 #include "cyttsp5_regs.h"
-#include "gesture_back.h"
+#include "gesture_driver.h"
 
 #define CY_HID_VENDOR_ID	0x04B4
 #define CY_HID_BL_PRODUCT_ID	0xC100
@@ -114,8 +113,6 @@ MODULE_FIRMWARE(CY_FW_FRONT_FILE_NAME);
 static const char *cy_driver_core_name = CYTTSP5_CORE_NAME;
 static const char *cy_driver_core_version = CY_DRIVER_VERSION;
 static const char *cy_driver_core_date = CY_DRIVER_DATE;
-
-extern bs_gesture_status_t bsStatus;
 
 struct cyttsp5_hid_desc {
 	__le16 hid_desc_len;
@@ -234,7 +231,6 @@ struct cyttsp5_core_data {
 #ifdef CONFIG_FB
 	struct notifier_block fb_notif;
 #endif
-	bool isLocked;
 };
 
 struct atten_node {
@@ -270,8 +266,9 @@ struct cyttsp5_hid_output {
 	u16 timeout_ms;
 };
 
-static u8 gesture_enable_mode[10] = {4,0,8,0,47,0,6,94,1,1};
-static u8 gesture_disable_mode[10] = {4,0,8,0,47,0,6,94,1,0};
+static u8 cmd_enable_gesture_swipe[] = {4,0,8,0,47,0,6,94,1,1};
+static u8 cmd_enable_gesture_taptap[] = {4,0,8,0,47,0,6,94,1,2};
+static u8 cmd_disable_gestures[] = {4,0,8,0,47,0,6,94,1,0};
 
 #define SET_CMD_OPCODE(byte, opcode) SET_CMD_LOW(byte, opcode)
 #define SET_CMD_REPORT_TYPE(byte, type) SET_CMD_HIGH(byte, ((type) << 4))
@@ -1430,7 +1427,7 @@ static int cyttsp5_hid_output_suspend_scanning(struct cyttsp5_core_data *cd)
 				__func__, cd->exclusive_dev, cd->core);
 		return rc;
 	}
-
+	dev_dbg(cd->dev, "%s for %s\n", __func__, cd->core->id);
 	rc = cyttsp5_hid_output_suspend_scanning_(cd);
 
 	if (release_exclusive(cd, cd->core) < 0)
@@ -1469,7 +1466,7 @@ static int cyttsp5_hid_output_resume_scanning(struct cyttsp5_core_data *cd)
 				__func__, cd->exclusive_dev, cd->core);
 		return rc;
 	}
-
+	dev_dbg(cd->dev, "%s for %s\n", __func__, cd->core->id);
 	rc = cyttsp5_hid_output_resume_scanning_(cd);
 
 	if (release_exclusive(cd, cd->core) < 0)
@@ -2848,6 +2845,18 @@ error:
 	return rc;
 }
 
+static int _cyttsp5_is_suspended(struct cyttsp5_device *ttsp)
+{
+	struct cyttsp5_core *core = ttsp->core;
+	struct cyttsp5_core_data *cd = dev_get_drvdata(&core->dev);
+
+	int rc = 0;
+	mutex_lock(&cd->system_lock);
+	rc = cd->sleep_state == SS_SLEEP_ON ? 1 : 0;
+	mutex_unlock(&cd->system_lock);
+	return rc;
+}
+
 static int cyttsp5_hid_output_user_cmd(struct cyttsp5_core_data *cd,
 		u16 read_len, u8 *read_buf, u16 write_len, u8 *write_buf,
 		u16 *actual_read_len)
@@ -2876,6 +2885,10 @@ static int _cyttsp5_request_hid_output_user_cmd(struct cyttsp5_device *ttsp,
 	struct cyttsp5_core *core = ttsp->core;
 	struct cyttsp5_core_data *cd = dev_get_drvdata(&core->dev);
 
+	if (_cyttsp5_is_suspended(ttsp)) {
+		dev_err(cd->dev, "%s: fail to exec user cmd while ttsp is suspended", __func__);
+		return -EBUSY;
+	}
 	if (protect)
 		return cyttsp5_hid_output_user_cmd(cd, read_len, read_buf,
 			write_len, write_buf, actual_read_len);
@@ -3944,6 +3957,12 @@ static void cyttsp5_watchdog_work(struct work_struct *work)
 					watchdog_work);
 	int rc;
 
+	/* If found the current sleep_state is SS_SLEEPING
+	 * then no need to request_exclusive, directly return
+	 */
+	if(cd->sleep_state == SS_SLEEPING)
+		return;
+
 	rc = request_exclusive(cd, cd->core,
 			CY_WATCHDOG_REQUEST_EXCLUSIVE_TIMEOUT);
 	if (rc < 0) {
@@ -3982,29 +4001,56 @@ static void cyttsp5_watchdog_timer(unsigned long handle)
 		schedule_work(&cd->watchdog_work);
 }
 
-static int cyttsp5_fstouch_lock(struct cyttsp5_core_data *cd)
+static int cyttsp5_touch_lock(struct cyttsp5_core_data *cd)
 {
-	int rc;
+	int rc = -1;
 	u16 response_length;
 	u8 read_buf[20];
+	u8 *cmd;
+	int touchid = 0;
+	dev_dbg(cd->dev, "cyttsp5_touch_lock for %s\n", cd->core->id);
 
-	rc = cyttsp5_hid_output_user_cmd(cd, 20, read_buf, 10, gesture_enable_mode, &response_length);
+	touchid = !strcmp(cd->core->id,CY_FRONT_CORE_ID) ? 0 : 1;
+	if (touchid == 0) {
+		if (get_unlock_gesture_enabled(FRONT_TOUCH_ID) & FRONT_GESTURE_UNLOCK_SWIPE)
+			cmd = cmd_enable_gesture_swipe;
+		else if (get_unlock_gesture_enabled(FRONT_TOUCH_ID) & FRONT_GESTURE_UNLOCK_TAPTAP)
+			cmd = cmd_enable_gesture_taptap;
+		else {
+			dev_err(cd->dev, "%s Front unlock gestures are disabled\n", __func__);
+			return -1;
+		}
+	}
+	else {
+		if (get_unlock_gesture_enabled(BACK_TOUCH_ID) & BACK_GESTURE_UNLOCK_SWIPE)
+			cmd = cmd_enable_gesture_swipe;
+		else if (get_unlock_gesture_enabled(BACK_TOUCH_ID) & (BACK_GESTURE_UNLOCK_TAPTAP | BACK_GESTURE_UNLOCK_TAPTAP_TOUCHDOWN))
+			cmd = cmd_enable_gesture_taptap;
+		else {
+			dev_err(cd->dev, "%s Back unlock gestures are disabled\n", __func__);
+			return -1;
+		}
+	}
+	rc = cyttsp5_hid_output_user_cmd(cd, 20, read_buf, 10, cmd, &response_length);
 	if (rc < 0) {
 		dev_err(cd->dev, "%s: Failed cyttsp5_hid_output_user_cmd %d\n",__func__,rc);
 	}
-	cd->isLocked = true;
 
 	return rc;
-
 }
 
-static int cyttsp5_fstouch_unlock(struct cyttsp5_core_data *cd)
+static int cyttsp5_touch_unlock(struct cyttsp5_core_data *cd)
 {
 	int rc;
 	u16 response_length;
 	u8 read_buf[20];
-	rc = cyttsp5_hid_output_user_cmd(cd, 20, read_buf, 10, gesture_disable_mode, &response_length);
-	cd->isLocked = false;
+	dev_dbg(cd ->dev, "cyttsp5_touch_unlock for %s\n", cd->core->id);
+
+	rc = cyttsp5_hid_output_user_cmd(cd, sizeof(read_buf), read_buf, sizeof(cmd_disable_gestures), cmd_disable_gestures, &response_length);
+	if (rc < 0) {
+		dev_err(cd->dev, "%s: Failed cyttsp5_hid_output_user_cmd %d\n",__func__,rc);
+	}
+
 	return rc;
 }
 
@@ -4033,36 +4079,50 @@ static int cyttsp5_put_device_into_deep_sleep_(struct cyttsp5_core_data *cd)
 static int cyttsp5_put_device_into_sleep_(struct cyttsp5_core_data *cd)
 {
 	int rc;
-	if(strcmp(cd->core->id,CY_BACK_CORE_ID)) {
-		if (IS_DEEP_SLEEP_CONFIGURED(cd->easy_wakeup_gesture))
-			rc = cyttsp5_put_device_into_deep_sleep_(cd);
-		else
-			rc = cyttsp5_put_device_into_easy_wakeup_(cd);
-	}
-	else {
-		dev_vdbg(cd->dev, "%s: Not Suspending back touch.....\n",__func__);
-		bsStatus.bs_unlock_enabled = true;
-		rc = 0;
-	}
-
+	dev_dbg(cd ->dev, "cyttsp5_put_device_into_sleep_: %s\n", cd->core->id);
+	if (IS_DEEP_SLEEP_CONFIGURED(cd->easy_wakeup_gesture))
+		rc = cyttsp5_put_device_into_deep_sleep_(cd);
+	else
+		rc = cyttsp5_put_device_into_easy_wakeup_(cd);
 	return rc;
 }
 
 static int cyttsp5_core_sleep_(struct cyttsp5_core_data *cd)
 {
 	int rc = 0;
+	int core_id = !strcmp(cd->core->id,CY_FRONT_CORE_ID) ? FRONT_TOUCH_ID : BACK_TOUCH_ID;
 	if (cd->sleep_state == SS_SLEEP_ON) {
-		dev_vdbg(cd->dev, "%s: Already in Sleep state\n",__func__);
+		dev_dbg(cd->dev, "%s: Already in Sleep state\n",__func__);
 		return 0;
 	}
-	cyttsp5_stop_wd_timer(cd);
-	if(!strcmp(cd->core->id,CY_BACK_CORE_ID) || (!strcmp(cd->core->id,CY_FRONT_CORE_ID) && (!bsStatus.fs_unlock_enabled)))
-		rc = cyttsp5_put_device_into_sleep_(cd);
 
 	mutex_lock(&cd->system_lock);
-	cd->sleep_state = SS_SLEEP_ON;
+	dev_dbg(cd->dev, "cyttsp5_core_sleep_ for %s, state: %d\n", cd->core->id, cd->sleep_state);
+
+	/* Prevent a dead lock when suspend process is called
+	   during watchdog timeout */
+	if (cd->sleep_state == SS_SLEEP_OFF) {
+		cd->sleep_state = SS_SLEEPING;
+	} else {
+		mutex_unlock(&cd->system_lock);
+		return 1;
+	}
 	mutex_unlock(&cd->system_lock);
 
+	cyttsp5_stop_wd_timer(cd);
+
+	if ((core_id == FRONT_TOUCH_ID) ||
+	    ((core_id == BACK_TOUCH_ID) && is_deepsleep_enabled(core_id))) {
+		rc = cyttsp5_put_device_into_sleep_(cd);
+		mutex_lock(&cd->system_lock);
+		cd->sleep_state = SS_SLEEP_ON;
+		mutex_unlock(&cd->system_lock);
+	} else {
+		/* Change the state back from SS_SLEEPING */
+		mutex_lock(&cd->system_lock);
+		cd->sleep_state = SS_SLEEP_OFF;
+		mutex_unlock(&cd->system_lock);
+	}
 	return rc;
 }
 
@@ -4326,6 +4386,7 @@ static irqreturn_t cyttsp5_irq(int irq, void *handle)
 	struct cyttsp5_core_data *cd = handle;
 	int rc;
 
+	dev_dbg(cd->dev, "cyttsp5_irq for %s\n", cd->core->id);
 	rc = cyttsp5_read_input(cd);
 	if (!rc)
 		cyttsp5_parse_input(cd);
@@ -4533,15 +4594,10 @@ static int cyttsp5_core_wake_device_from_deep_sleep_(
 		struct cyttsp5_core_data *cd)
 {
 	int rc =0;
-	if(strcmp(cd->core->id,CY_BACK_CORE_ID)) {
-		rc = cyttsp5_hid_cmd_set_power_(cd, HID_POWER_ON);
-		if (rc)
-			rc =  -EAGAIN;
-	}
-	else {
-		dev_vdbg(cd->dev, "%s: Not Resuming back touch.....\n",__func__);
-		rc = 0;
-	}
+	dev_dbg(cd->dev, "cyttsp5_core_wake_device_from_deep_sleep_ for %s\n", cd->core->id);
+	rc = cyttsp5_hid_cmd_set_power_(cd, HID_POWER_ON);
+	if (rc)
+		rc =  -EAGAIN;
 	return rc;
 }
 
@@ -4560,21 +4616,19 @@ static int cyttsp5_core_wake_device_(struct cyttsp5_core_data *cd)
 static int cyttsp5_core_wake_(struct cyttsp5_core_data *cd)
 {
 	int rc = 0;
+	int core_id = !strcmp(cd->core->id,CY_FRONT_CORE_ID) ? FRONT_TOUCH_ID : BACK_TOUCH_ID;
 	if (cd->sleep_state == SS_SLEEP_OFF) {
-		dev_vdbg(cd->dev, "%s: Already in Wakeup state\n",__func__);
+		dev_dbg(cd->dev, "%s: Already in Wakeup state\n",__func__);
 		return 0;
 	}
-
-	if(!strcmp(cd->core->id,CY_BACK_CORE_ID)|| (!bsStatus.fs_unlock_enabled && (!strcmp(cd->core->id,CY_FRONT_CORE_ID)))) {
+	dev_dbg(cd->dev, "cyttsp5_core_wake_ for %s, state:%d\n", cd->core->id, cd->sleep_state);
+	if ((core_id == FRONT_TOUCH_ID) ||
+	    ((core_id == BACK_TOUCH_ID) && is_deepsleep_enabled(core_id))) {
 		rc = cyttsp5_core_wake_device_(cd);
+		mutex_lock(&cd->system_lock);
+		cd->sleep_state = SS_SLEEP_OFF;
+		mutex_unlock(&cd->system_lock);
 	}
-	else if (!strcmp(cd->core->id,CY_FRONT_CORE_ID)){
-		bsStatus.fs_locked = false;
-	}
-
-	mutex_lock(&cd->system_lock);
-	cd->sleep_state = SS_SLEEP_OFF;
-	mutex_unlock(&cd->system_lock);
 
 	cyttsp5_start_wd_timer(cd);
 	return rc;
@@ -4846,13 +4900,15 @@ static int cyttsp5_core_rt_resume(struct device *dev)
 static int cyttsp5_core_suspend(struct device *dev)
 {
 	struct cyttsp5_core_data *cd = dev_get_drvdata(dev);
+	int core_id = !strcmp(cd->core->id,CY_FRONT_CORE_ID) ? FRONT_TOUCH_ID : BACK_TOUCH_ID;
 
 	/*
 	 * Dont call for Front touch.
 	 * For back touch required for lock/unlock
 	 * feature.
 	 */
-	if(strcmp(cd->core->id,CY_FRONT_CORE_ID)) {
+        dev_dbg(dev, "%s, core: %s\n", __func__, cd->core->id);
+	if ((core_id == BACK_TOUCH_ID) && !driver_is_touch_locked(core_id)) {
 		cyttsp5_core_sleep(cd);
 	}
 
@@ -4879,6 +4935,9 @@ static int cyttsp5_core_suspend(struct device *dev)
 static int cyttsp5_core_resume(struct device *dev)
 {
 	struct cyttsp5_core_data *cd = dev_get_drvdata(dev);
+	int core_id = !strcmp(cd->core->id,CY_FRONT_CORE_ID) ? FRONT_TOUCH_ID : BACK_TOUCH_ID;
+
+        dev_dbg(dev, "%s, core: %s\n", __func__, cd->core->id);
 
 	if (!(cd->pdata->flags & CY_CORE_FLAG_WAKE_ON_GESTURE))
 		goto exit;
@@ -4901,10 +4960,9 @@ exit:
 	 * For back touch required for lock/unlock
 	 * feature.
 	 */
-	if(strcmp(cd->core->id,CY_FRONT_CORE_ID)) {
+	if ((core_id == BACK_TOUCH_ID) && !driver_is_touch_locked(core_id)) {
 		cyttsp5_core_wake(cd);
 	}
-
 	return 0;
 }
 #endif
@@ -5079,7 +5137,8 @@ static ssize_t cyttsp5_drv_debug_store(struct device *dev,
 	unsigned long value;
 	int rc;
 	u8 return_data[8];
-
+	u32 mode;
+	int core_id = !strcmp(cd->core->id,CY_FRONT_CORE_ID) ? FRONT_TOUCH_ID : BACK_TOUCH_ID;
 	rc = kstrtoul(buf, 10, &value);
 	if (rc < 0) {
 		dev_err(dev, "%s: Invalid value\n", __func__);
@@ -5088,48 +5147,44 @@ static ssize_t cyttsp5_drv_debug_store(struct device *dev,
 
 	switch (value) {
 	case CY_DBG_SUSPEND:
-		dev_info(dev, "%s: SUSPEND (cd=%p)\n", __func__, cd);
-		if((bsStatus.fs_unlock_enabled && !strcmp(cd->core->id,CY_FRONT_CORE_ID) && (!cd->isLocked))
-			|| (!strcmp(cd->core->id,CY_BACK_CORE_ID))) {
-				cyttsp5_fstouch_lock(cd);
-				rc = cyttsp5_core_sleep(cd);
-				if (rc)
-					dev_err(dev, "%s: Gesture Suspend failed rc=%d\n",
-						__func__, rc);
-				else
-					dev_info(dev, "%s: Gesture Suspend succeeded\n", __func__);
+		rc = 0;
+		dev_info(dev, "%s: SUSPEND (cd=%p, name=%s)\n", __func__, cd, cd->core->id);
+		if (get_unlock_gesture_enabled(core_id)) {
+			cyttsp5_stop_wd_timer(cd);
+			rc = cyttsp5_touch_lock(cd);
 		}
 		else {
 			rc = cyttsp5_core_sleep(cd);
-			if (rc)
-				dev_err(dev, "%s: Suspend failed rc=%d\n",
-					__func__, rc);
-			else
-				dev_info(dev, "%s: Suspend succeeded\n", __func__);
 		}
+		if (rc)
+			dev_err(dev, "%s: Suspend failed rc=%d\n",
+				__func__, rc);
+		else
+			dev_info(dev, "%s: Suspend succeeded\n", __func__);
+		driver_touch_lock(core_id);
 		break;
-
 	case CY_DBG_RESUME:
-		dev_info(dev, "%s: RESUME (cd=%p)\n", __func__, cd);
-		if((bsStatus.fs_unlock_enabled && !strcmp(cd->core->id,CY_FRONT_CORE_ID) && (!cd->isLocked))
-			 || (!strcmp(cd->core->id,CY_BACK_CORE_ID))) {
-				rc = cyttsp5_core_wake(cd);
-				if (rc)
-					dev_err(dev, "%s: Gesture Resume failed rc=%d\n",
-						__func__, rc);
-				else
-					dev_info(dev, "%s: Gesture Resume succeeded\n", __func__);
-
-				cyttsp5_fstouch_unlock(cd);
+		rc = 0;
+		dev_info(dev, "%s: RESUME (cd=%p, name=%s), front locked:%d, back locked:%d\n",
+			 __func__, cd, cd->core->id, driver_is_touch_locked(FRONT_TOUCH_ID),
+			 driver_is_touch_locked(BACK_TOUCH_ID));
+		if (driver_is_touch_locked(core_id) && get_unlock_gesture_enabled(core_id)) {
+			rc = cyttsp5_touch_unlock(cd);
+			cyttsp5_start_wd_timer(cd);
+		}
+		else if (!driver_is_touch_locked(core_id) &&
+			 get_unlock_gesture_enabled(core_id)) {
+			cyttsp5_start_wd_timer(cd);
 		}
 		else {
 			rc = cyttsp5_core_wake(cd);
-			if (rc)
-				dev_err(dev, "%s: Resume failed rc=%d\n",
-					__func__, rc);
-			else
-				dev_info(dev, "%s: Resume succeeded\n", __func__);
 		}
+		if (rc)
+			dev_err(dev, "%s: Resume failed rc=%d\n",
+				__func__, rc);
+		else
+			dev_info(dev, "%s: Resume succeeded\n", __func__);
+		driver_touch_unlock(core_id);
 		break;
 
 	case CY_DBG_MT_LIFT_ALL:
@@ -5217,8 +5272,20 @@ static ssize_t cyttsp5_drv_debug_store(struct device *dev,
 		dev_info(dev, "%s: initiate bl (cd=%p)\n", __func__, cd);
 		cyttsp5_hid_output_bl_initiate_bl(cd, 0, NULL, 0, NULL);
 		break;
+	case CY_DBG_HID_GLOVE_ENABLE:
+		dev_info(dev, "%s: CY_DBG_HID_GLOVE_ENABLE (cd=%p)\n", __func__, cd);
+		cyttsp5_hid_output_get_param(cd, CY_RAM_ID_TOUCHMODE_ENABLED, &mode);
+		mode = (mode & ~0x1f) | 0x3;
+		cyttsp5_hid_output_set_param(cd, CY_RAM_ID_TOUCHMODE_ENABLED, mode);
+		break;
+	case CY_DBG_HID_GLOVE_DISABLE:
+		dev_info(dev, "%s: CY_DBG_HID_GLOVE_DISABLE (cd=%p)\n", __func__, cd);
+		cyttsp5_hid_output_get_param(cd, CY_RAM_ID_TOUCHMODE_ENABLED, &mode);
+		mode = (mode & ~0x1f) | 0x1;
+		cyttsp5_hid_output_set_param(cd, CY_RAM_ID_TOUCHMODE_ENABLED, mode);
+		break;
 	default:
-		dev_err(dev, "%s: Invalid value\n", __func__);
+		dev_err(dev, "%s: Invalid value: %d\n", __func__, (int)value);
 	}
 
 cyttsp5_drv_debug_store_exit:
@@ -5397,32 +5464,51 @@ static int fb_notifier_callback(struct notifier_block *self,
 {
 	struct fb_event *evdata = data;
 	int *blank;
+	int rc;
 	struct cyttsp5_core_data *cd =
 		container_of(self, struct cyttsp5_core_data, fb_notif);
+	dev_dbg(cd->dev, "cyttsp5_core: %s for %s, event:%d\n", __func__, cd->core->id, (int)event);
 	if (evdata && evdata->data && cd && cd->dev) {
 		if (event == FB_EVENT_BLANK) {
 			blank = evdata->data;
 			if (*blank == FB_BLANK_UNBLANK) {
-				if(bsStatus.fs_unlock_enabled) {
-					if(cd->isLocked) {
-						cyttsp5_core_wake(cd);
-						cyttsp5_fstouch_unlock(cd);
-					}
+				rc = 0;
+				if (driver_is_touch_locked(FRONT_TOUCH_ID) &&
+				    get_unlock_gesture_enabled(FRONT_TOUCH_ID)) {
+					// unlock because of screen on
+					rc = cyttsp5_touch_unlock(cd);
+					cyttsp5_start_wd_timer(cd);
+				}
+				else if (!driver_is_touch_locked(FRONT_TOUCH_ID) &&
+					 get_unlock_gesture_enabled(FRONT_TOUCH_ID)) {
+					// unlock because of gesture
+					cyttsp5_start_wd_timer(cd);
 				}
 				else {
-					cyttsp5_core_wake(cd);
+					rc = cyttsp5_core_wake(cd);
 				}
+				if (rc)
+					dev_err(cd->dev, "%s: Resume failed rc=%d\n",
+						__func__, rc);
+				else
+					dev_info(cd->dev, "%s: Resume succeeded\n", __func__);
+				driver_touch_unlock(FRONT_TOUCH_ID);
 			}
 			else if ((*blank == FB_BLANK_POWERDOWN) || (*blank == FB_BLANK_NORMAL)) {
-				if(bsStatus.fs_unlock_enabled) {
-					if(!cd->isLocked) {
-						cyttsp5_fstouch_lock(cd);
-						cyttsp5_core_sleep(cd);
-					}
+				rc = 0;
+				if(get_unlock_gesture_enabled(FRONT_TOUCH_ID)) {
+					cyttsp5_stop_wd_timer(cd);
+					rc = cyttsp5_touch_lock(cd);
 				}
 				else {
-					cyttsp5_core_sleep(cd);
+					rc = cyttsp5_core_sleep(cd);
 				}
+				if (rc)
+					dev_err(cd->dev, "%s: Suspend failed rc=%d\n",
+						__func__, rc);
+				else
+					dev_info(cd->dev, "%s: Suspend succeeded\n", __func__);
+				driver_touch_lock(FRONT_TOUCH_ID);
 			}
 		}
 	}
@@ -5441,8 +5527,8 @@ static int cyttsp5_core_probe(struct cyttsp5_core *core)
 
 	rc = gpio_request(TOUCH_AVDD_EN_GPIO, "TOUCH_AVDD_EN_GPIO");
 	if (rc == -EBUSY) {
-                        dev_err(dev, "%s: TOUCH_AVDD_EN_GPIO=%d is already requested.... \n",
-                                        __func__, TOUCH_AVDD_EN_GPIO);
+		dev_err(dev, "%s: TOUCH_AVDD_EN_GPIO=%d is already requested.... \n",
+			__func__, TOUCH_AVDD_EN_GPIO);
 			goto next;
 	}
 	if (rc < 0) {
@@ -5454,7 +5540,7 @@ static int cyttsp5_core_probe(struct cyttsp5_core *core)
 	rc = gpio_direction_output(TOUCH_AVDD_EN_GPIO, 1);
 	if (rc < 0) {
 		    pr_err("%s: Fail set output TOUCH_AVDD_EN_GPIO=%d\n",
-					        __func__, TOUCH_AVDD_EN_GPIO);
+			   __func__, TOUCH_AVDD_EN_GPIO);
 			goto error_set_gpio_value;
 	}
 
@@ -5526,7 +5612,6 @@ next:
 		goto error_gpio_irq;
 	}
 	cd->irq_enabled = true;
-	cd->isLocked = false;
 
 	dev_dbg(dev, "%s: initialize threaded irq=%d\n", __func__, cd->irq);
 	if (cd->pdata->level_irq_udelay > 0)
@@ -5555,15 +5640,15 @@ next:
 	}
 
 #ifdef CONFIG_FB
-       if(strcmp(cd->core->id,CY_BACK_CORE_ID)) {
-               cd->fb_notif.notifier_call = fb_notifier_callback;
+	if(strcmp(cd->core->id,CY_BACK_CORE_ID)) {
+		cd->fb_notif.notifier_call = fb_notifier_callback;
 
-               rc = fb_register_client(&cd->fb_notif);
+		rc = fb_register_client(&cd->fb_notif);
 
-               if (rc)
-                       dev_err(dev, "Unable to register fb_notifier: %d\n",
-                               rc);
-       }
+		if (rc)
+			dev_err(dev, "Unable to register fb_notifier: %d\n",
+				rc);
+	}
 #endif
 
 #ifdef TTHE_TUNER_SUPPORT
@@ -5682,6 +5767,7 @@ static struct cyttsp5_core_nonhid_cmd _cyttsp5_core_nonhid_cmd = {
 	.prog_and_verify = _cyttsp5_request_hid_output_bl_program_and_verify,
 	.verify_app_integrity =
 		_cyttsp5_request_hid_output_bl_verify_app_integrity,
+	.is_core_suspended = _cyttsp5_is_suspended,
 };
 
 static struct cyttsp5_core_driver cyttsp5_core_driver = {
@@ -5720,8 +5806,8 @@ static int __init cyttsp5_core_init(void)
 		 __func__, CY_DRIVER_DATE, rc);
 	return rc;
 }
-//module_init(cyttsp5_core_init);
-deferred_module_init_0(cyttsp5_core_init);
+module_init(cyttsp5_core_init);
+//deferred_module_init_0(cyttsp5_core_init);
 
 static void __exit cyttsp5_core_exit(void)
 {

@@ -141,6 +141,7 @@ struct cyttsp5_core_nonhid_cmd {
 			u16 data_len, u8 *data_buf);
 	int (*verify_app_integrity) (struct cyttsp5_device *ttsp, int protect,
 			u8 *result);
+	int (*is_core_suspended) (struct cyttsp5_device *ttsp);
 };
 
 struct cyttsp5_core_driver {
@@ -211,6 +212,8 @@ int cyttsp5_read_sensor_data(char const *name, char const *core_id,
 int cyttsp5_suspend_scanning(char const *name, char const *core_id, int protect);
 
 int cyttsp5_resume_scanning(char const *name, char const *core_id, int protect);
+
+int cyttsp5_is_suspended(char const *name, char const *core_id);
 
 static inline int cyttsp5_adap_read_default(struct cyttsp5_adapter *adap,
 		void *buf, int size)

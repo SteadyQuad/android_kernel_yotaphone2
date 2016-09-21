@@ -625,8 +625,8 @@ static int __init cyttsp5_proximity_init(void)
 		 __func__, CY_DRIVER_DATE, rc);
 	return rc;
 }
-//module_init(cyttsp5_proximity_init);
-deferred_module_init_0(cyttsp5_proximity_init);
+module_init(cyttsp5_proximity_init);
+//deferred_module_init_0(cyttsp5_proximity_init);
 
 static void __exit cyttsp5_proximity_exit(void)
 {

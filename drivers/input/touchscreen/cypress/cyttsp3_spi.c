@@ -313,6 +313,7 @@ static int __init cyttsp_spi_init(void)
 {
 	return spi_register_driver(&cyttsp_spi_driver);
 }
+
 //module_init(cyttsp_spi_init);
 deferred_module_init_1(cyttsp_spi_init);
 

@@ -64,6 +64,18 @@ struct s1d13522_ioctl_temperature
 #define S1D13522_SET_REGAL_D_OFF            0x4565
 #define S1D13522_GET_REGAL_D_STATE          0x4566
 
+#define S1D13522_UPDATE_AREA                0x4580
+typedef struct {
+    int cmd;
+    int waveform;
+    unsigned short left;
+    unsigned short top;
+    unsigned short width;
+    unsigned short height;
+    unsigned short *imgdata;
+} S1D13522_UPDATE_AREA_params_t;
+
+
 // System commands
 #define INIT_CMD_SET                    0x00	// Initialize instruction code (is serial flash not used)
 #define INIT_PLL_STANDBY                0x01	// Init PLL and Go to Standby Mode

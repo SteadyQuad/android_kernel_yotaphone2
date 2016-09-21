@@ -121,6 +121,8 @@
 #define CY_DBG_HID_RESUME_SCAN          104
 #define CY_DBG_HID_STOP_WD              105
 #define CY_DBG_HID_START_WD             106
+#define CY_DBG_HID_GLOVE_ENABLE         1000
+#define CY_DBG_HID_GLOVE_DISABLE        1001
 
 /* Recognized usages */
 /* undef them first for possible redefinition in Linux */

@@ -110,8 +110,8 @@ this program. If not, see <http://www.gnu.org/licenses/>
 #define ERROR   1
 
 #define S1D13522_PANEL_INDEX	7
-#define S1D13522_EPD_BPP		4
-#define S1D13522_VFB_BPP		4
+#define S1D13522_EPD_BPP		8
+#define S1D13522_VFB_BPP		8
 #define WAVEFORM_SFLASH
 
 #ifdef CONFIG_S1D13522_VFB_MONO8
@@ -780,7 +780,7 @@ static void s1d13522fb_refresh_global(struct fb_info *info,
 	mutex_lock(&s1d13522fb_info.refresh_display_mutex);
 	s1d13522if_cmd(WAIT_DSPE_TRG, &cmd_params, 0);
 	s1d13522if_WriteReg16(0x330, lutsel);
-	cmd_params.param[0] = (0x2<<4);
+	cmd_params.param[0] = (0x3<<4);
 	s1d13522if_cmd(LD_IMG, &cmd_params, 1);
 	cmd_params.param[0] = 0x154;
 	s1d13522if_cmd(WR_REG, &cmd_params, 1);
@@ -815,10 +815,10 @@ static void s1d13522fb_refresh_area(struct fb_info *info,
 	mutex_lock(&s1d13522fb_info.refresh_display_mutex);
 	s1d13522if_cmd(WAIT_DSPE_TRG, &cmd_params, 0);
 	s1d13522if_WriteReg16(0x330, lutsel);
-	cmd_params.param[0] = (0x2<<4);
-	cmd_params.param[1] = left&~0x03;
+	cmd_params.param[0] = (0x3<<4);
+	cmd_params.param[1] = left;
 	cmd_params.param[2] = top;
-	cmd_params.param[3] = (mWidth+3)&~0x03;
+	cmd_params.param[3] = mWidth;
 	cmd_params.param[4] = mHeight;
 	s1d13522if_cmd(LD_IMG_AREA, &cmd_params, 5);
 
@@ -847,6 +847,61 @@ static void s1d13522fb_refresh_area(struct fb_info *info,
 	mutex_unlock(&s1d13522fb_info.refresh_display_mutex);
 	dbg_info("%s() exit\n", __func__);
 
+}
+
+static int s1d13522fb_update_area(struct fb_info *info,
+				   unsigned int cmd, unsigned int waveform,
+				   u16 left, u16 top,  u16 width, u16 height,
+				   u_int8_t *imgdata)
+{
+	struct s1d13522fb_par *par = info->par;
+	dma_addr_t handle = (dma_addr_t)DmaPhys;
+	u16 lutsel;
+	size_t data_len;
+	s1d13522_ioctl_cmd_params cmd_params;
+
+	dbg_info("%s(): cmd=%d, waveform=%d, width=%d, height=%d, left=%d, top=%d\n",
+		 __func__, cmd, waveform, width, height, left, top);
+
+	mutex_lock(&(par->io_lock));
+
+	s1d13522if_cmd(WAIT_DSPE_TRG, &cmd_params, 0);
+
+	lutsel = (waveform == WF_MODE_AUTO) ? 0xC4 : 0x84;
+	s1d13522if_WriteReg16(0x330, lutsel);
+
+	cmd_params.param[0] = (0x3<<4);
+	cmd_params.param[1] = left;
+	cmd_params.param[2] = top;
+	cmd_params.param[3] = width;
+	cmd_params.param[4] = height;
+	s1d13522if_cmd(LD_IMG_AREA, &cmd_params, 5);
+
+	cmd_params.param[0] = 0x154;
+	s1d13522if_cmd(WR_REG, &cmd_params, 1);
+
+	/* roundup to double pixel value */
+	data_len = width * height;
+	data_len++;
+
+	s1d13522if_BurstWrite16fb((u16 *)imgdata, handle, data_len >> 1);
+	s1d13522if_cmd(LD_IMG_END, &cmd_params, 0);
+
+	s1d13522if_WriteReg16(0x33a, 0xffff);
+
+	cmd_params.param[0] = (waveform<<8);
+	cmd_params.param[0] = checkBorderUpdate(cmd_params.param[0]);
+	cmd_params.param[1] = left;
+	cmd_params.param[2] = top;
+	cmd_params.param[3] = width;
+	cmd_params.param[4] = height;
+
+	// Use automatic VCOM management
+	s1d13522if_WriteReg16(0x232, 0x0);
+	s1d13522if_cmd(cmd, &cmd_params, (cmd == UPD_INIT) ? 0 : 5);
+
+	mutex_unlock(&(par->io_lock));
+	return 0;
 }
 
 static void s1d13522fb_cursor_enable(struct fb_info *info,
@@ -920,7 +975,7 @@ static void s1d13522fb_refresh_PIP_global(struct fb_info *info,
 {
 	s1d13522_ioctl_cmd_params cmd_params;
 	struct s1d13522fb_par *par = info->par;
-	u32 size16 = (mWidth*mHeight)/4;
+	u32 size16 = (mWidth*mHeight)/2 + 1;
 
 	u8 *pSource = (u8 *) (par->epd_buffer_host);
 	dma_addr_t handle = (dma_addr_t)(DmaPhys);
@@ -942,7 +997,7 @@ static void s1d13522fb_refresh_PIP_global(struct fb_info *info,
 	cmd_params.param[1] = ((S1D_PIP_ADDR>>16)&0x000003ff);
 	s1d13522if_cmd(PIP_ADRCFG, &cmd_params, 2);
 
-	cmd_params.param[0] = (0x2<<4)|(1<<10);
+	cmd_params.param[0] = (0x3<<4)|(1<<10);
 	s1d13522if_cmd(LD_IMG, &cmd_params, 1);
 	cmd_params.param[0] = 0x154;
 	s1d13522if_cmd(WR_REG, &cmd_params, 1);
@@ -1001,7 +1056,7 @@ static void s1d13522fb_refresh_PIP_area(struct fb_info *info,
 	cmd_params.param[1] = ((S1D_PIP_ADDR>>16)&0x000003ff);
 	s1d13522if_cmd(PIP_ADRCFG, &cmd_params, 2);
 
-	cmd_params.param[0] = (0x2<<4)|(1<<10);
+	cmd_params.param[0] = (0x3<<4)|(1<<10);
 	cmd_params.param[1] = 0x0000;
 	cmd_params.param[2] = 0x0000;
 	cmd_params.param[3] = (mWidth+0x03)&~0x03;
@@ -1167,9 +1222,9 @@ void s1d13522fb_display_init(unsigned cmd, unsigned mode, struct s1d13522fb_par 
 	*/
 
 #if USE_PACKED_LOGO
-	unpack_logo(epdbootlogo, sizeof(epdbootlogo), (unsigned char*)pSource, (S1D_DISPLAY_WIDTH * S1D_DISPLAY_HEIGHT * S1D13522_EPD_BPP)/8);
+	unpack_logo(epdbootlogo, sizeof(epdbootlogo), (unsigned char*)pSource, (S1D_DISPLAY_WIDTH * S1D_DISPLAY_HEIGHT * 4)/8);
 #else
-	memcpy(pSource, epdbootlogo, (epdbootlogo_len > ((S1D_DISPLAY_WIDTH * S1D_DISPLAY_HEIGHT * S1D13522_EPD_BPP)/8) ? ((S1D_DISPLAY_WIDTH * S1D_DISPLAY_HEIGHT*S1D13522_EPD_BPP)/8) : epdbootlogo_len));
+	memcpy(pSource, epdbootlogo, (epdbootlogo_len > ((S1D_DISPLAY_WIDTH * S1D_DISPLAY_HEIGHT * 4)/8) ? ((S1D_DISPLAY_WIDTH * S1D_DISPLAY_HEIGHT*4)/8) : epdbootlogo_len));
 #endif
 	if (systemRun() < 0) {
 		printk(KERN_ERR "%s: systemRun error\n", __func__);
@@ -1183,7 +1238,7 @@ void s1d13522fb_display_init(unsigned cmd, unsigned mode, struct s1d13522fb_par 
 	if (s1d13522if_cmd(LD_IMG, &cmd_params, 1) == -1) goto hrdyErr;
 	cmd_params.param[0] = 0x154;
 	if (s1d13522if_cmd(WR_REG, &cmd_params, 1) == -1) goto hrdyErr;
-	s1d13522if_BurstWrite16fb(pSource, handle, size16);
+	s1d13522if_BurstWrite16fb(pSource, handle, size16/2);
 	dbg_info("[%s:%d] Burst write the buffer\n", __func__, __LINE__);
 	if (s1d13522if_cmd(LD_IMG_END, &cmd_params, 0) == -1) goto hrdyErr;
 	memcpy(par->epd_buffer_host_current, par->epd_buffer_host, par->epd_buffer_host_memorysize);
@@ -1831,7 +1886,8 @@ void update_only(void)
 
 	if (updateModeSpecial == UPD_FULL ||
 	    updateModeSpecial == UPD_FULL_AREA) {
-		cyttsp5_suspend_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
+		if (!cyttsp5_is_suspended(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID))
+			cyttsp5_suspend_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
 	}
 
 	s1d13522if_WriteReg16(0x33a, 0xffff);
@@ -1854,9 +1910,11 @@ void update_only(void)
 	if (s1d13522if_cmd(WAIT_DSPE_FREND, &cmd_params, 0) == -1) goto hrdyErr;
 	s1d13522if_WaitForHRDY();
 hrdyErr:
+	s1d13522if_WriteReg16(0x232, 0x100);
 	if (updateModeSpecial == UPD_FULL ||
 	    updateModeSpecial == UPD_FULL_AREA) {
-		cyttsp5_resume_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
+		if (!cyttsp5_is_suspended(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID))
+			cyttsp5_resume_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
 	}
 	if (systemSleep() < 0)
 		printk(KERN_ERR "%s: systemSleep error\n", __func__);
@@ -1925,7 +1983,7 @@ static void s1d13522fb_dpy_update_pages(struct s1d13522fb_par *par,
 	}
 
 	y = offset/stride;
-	height = ((numpages*PAGE_SIZE) / stride)*8;
+	height = ((numpages*PAGE_SIZE) / stride);
 
 	if (y + height > par->panelh)
 		height = par->panelh - y;
@@ -1933,13 +1991,13 @@ static void s1d13522fb_dpy_update_pages(struct s1d13522fb_par *par,
 	dbg_info("%s(): y: %d height:%d par->panelw:%d\n", __func__, y, height, par->panelw);
 
 	if (offset == 0 && numpages >= numPage) {
-		cmd_params.param[0] = (0x2<<4);
+		cmd_params.param[0] = (0x3<<4);
 		if (s1d13522if_cmd(LD_IMG, &cmd_params, 1) == -1) goto hrdyErr;
 		cmd_params.param[0] = 0x154;
 		if (s1d13522if_cmd(WR_REG, &cmd_params, 1) == -1) goto hrdyErr;
 		s1d13522if_BurstWrite16fb(pSource, handle, size16/2);
 	} else {
-		cmd_params.param[0] = (0x2<<4);
+		cmd_params.param[0] = (0x3<<4);
 		cmd_params.param[1] = 0;
 		cmd_params.param[2] = y;
 		cmd_params.param[3] = par->panelw;
@@ -1956,7 +2014,8 @@ static void s1d13522fb_dpy_update_pages(struct s1d13522fb_par *par,
 
 	if (updateMode == UPD_FULL ||
 	    updateMode == UPD_FULL_AREA) {
-		cyttsp5_suspend_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
+		if (!cyttsp5_is_suspended(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID))
+			cyttsp5_suspend_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
 	}
 
 	s1d13522if_WriteReg16(0x33a, 0xffff);
@@ -2011,7 +2070,8 @@ hrdyErr:
 	    updateMode == UPD_FULL_AREA) {
 		s1d13522if_cmd(WAIT_DSPE_FREND, &cmd_params, 0);
 		s1d13522if_WaitForHRDY();
-		cyttsp5_resume_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
+		if (!cyttsp5_is_suspended(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID))
+			cyttsp5_resume_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
 	}
 	if (systemSleep() < 0) {
 		printk(KERN_ERR "%s: systemSleep error\n", __func__);
@@ -2063,7 +2123,7 @@ void s1d13522fb_dpy_update(struct s1d13522fb_par *par)
 	}
 
 	if (s1d13522if_cmd(WAIT_DSPE_TRG, &cmd_params, 0) == -1) goto hrdyErr;
-	cmd_params.param[0] = (0x2<<4);
+	cmd_params.param[0] = (0x3<<4);
 	if (s1d13522if_cmd(LD_IMG, &cmd_params, 1) == -1) goto hrdyErr;
 	cmd_params.param[0] = 0x154;
 	if (s1d13522if_cmd(WR_REG, &cmd_params, 1) == -1) goto hrdyErr;
@@ -2072,7 +2132,8 @@ void s1d13522fb_dpy_update(struct s1d13522fb_par *par)
 
 	if (updateMode == UPD_FULL ||
 	    updateMode == UPD_FULL_AREA) {
-		cyttsp5_suspend_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
+		if (!cyttsp5_is_suspended(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID))
+			cyttsp5_suspend_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
 	}
 
 	s1d13522if_WriteReg16(0x33a, 0xffff);
@@ -2108,7 +2169,8 @@ hrdyErr:
 	    updateMode == UPD_FULL_AREA) {
 		s1d13522if_cmd(WAIT_DSPE_FREND, &cmd_params, 0);
 		s1d13522if_WaitForHRDY();
-		cyttsp5_resume_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
+		if (!cyttsp5_is_suspended(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID))
+			cyttsp5_resume_scanning(CYTTSP5_DEVICE_ACCESS_NAME, CY_BACK_CORE_ID, 1);
 	}
 	if (systemSleep() < 0) {
 		printk(KERN_ERR "%s: systemSleep error\n", __func__);
@@ -2466,6 +2528,26 @@ L1:
 			cmd_params.param[3], cmd_params.param[4],
 			cmd_params.param[5]);
 		break;
+	case S1D13522_UPDATE_AREA: {
+		S1D13522_UPDATE_AREA_params_t p;
+		u_int8_t *img = NULL;
+
+		if (copy_from_user(&p, argp, sizeof(p))) return -EFAULT;
+
+		img = s1d13522_get_mem_obj(par->malloc_cache, (p.width*p.height));
+		if (!img)
+			return -ENOMEM;
+		if (copy_from_user(img, p.imgdata, p.width*p.height)) {
+			s1d13522_put_mem_obj(par->malloc_cache, img);
+			return -EFAULT;
+		}
+		retVal = s1d13522fb_update_area(info, p.cmd, p.waveform,
+					        p.left, p.top,
+					        p.width, p.height, img);
+		s1d13522_put_mem_obj(par->malloc_cache, img);
+
+		return retVal;
+	}
 
 	case S1D13522_VBUF_REFRESH_PIP_GLOBAL:
 		if (copy_from_user(&cmd_params, argp, 7*sizeof(u16)))
@@ -3004,6 +3086,12 @@ static int s1d13522fb_probe(struct platform_device *pdev)
 		goto err_cleanup;
 	}
 
+	par->malloc_cache = s1d13522_init_mem_chache();
+	if (!par->malloc_cache) {
+		printk(KERN_ERR "s1d13522fb_probe: Couldn't allocate memcache\n");
+		goto err_unregister;
+	}
+
 	retval = register_framebuffer(info);
 	if (retval < 0)
 		goto err_cleanup;
@@ -3027,7 +3115,8 @@ static int s1d13522fb_probe(struct platform_device *pdev)
 #endif
 	kfree(board);
 	return 0;
-
+err_unregister:
+	unregister_framebuffer(info);
 err_cleanup:
 	dma_free_coherent(dev, videomemorysize, videomemory, DmaPhys);
 	dma_free_coherent(dev, par->epd_buffer_host_memorysize,
@@ -3037,6 +3126,7 @@ err_cleanup:
 
 err_fb_rel:
 	framebuffer_release(info);
+	info = NULL;
 err:
 	kfree(board);
 	return retval;
@@ -3060,6 +3150,7 @@ static int  s1d13522fb_remove(struct platform_device *dev)
 		unregister_framebuffer(info);
 		dbg_info("%s(): Unregistered framebuffer\n", __func__);
 		fb_deferred_io_cleanup(info);
+		s1d13522_destroy_mem_cache(par->malloc_cache);
 		par->board->cleanup(par);
 		vfree((void *)info->screen_base);
 		framebuffer_release(info);

@@ -91,8 +91,8 @@ static int __init cyttsp5_mt_init(void)
 		 __func__, CY_DRIVER_DATE, rc);
 	return rc;
 }
-//module_init(cyttsp5_mt_init);
-deferred_module_init_0(cyttsp5_mt_init);
+module_init(cyttsp5_mt_init);
+//deferred_module_init_0(cyttsp5_mt_init);
 
 static void __exit cyttsp5_mt_exit(void)
 {

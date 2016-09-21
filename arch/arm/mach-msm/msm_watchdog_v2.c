@@ -90,7 +90,7 @@ static void dump_cpu_alive_mask(struct msm_watchdog_data *wdog_dd)
 	static char alive_mask_buf[MASK_SIZE];
 	cpulist_scnprintf(alive_mask_buf, MASK_SIZE,
 						&wdog_dd->alive_mask);
-	printk(KERN_INFO "cpu alive mask from last pet %s\n", alive_mask_buf);
+	printk(KERN_EMERG "cpu alive mask from last pet %s\n", alive_mask_buf);
 }
 
 static int msm_watchdog_suspend(struct device *dev)
@@ -322,18 +322,24 @@ static irqreturn_t wdog_bark_handler(int irq, void *dev_id)
 {
 	struct msm_watchdog_data *wdog_dd = (struct msm_watchdog_data *)dev_id;
 	unsigned long nanosec_rem;
-	unsigned long long t = sched_clock();
+	unsigned long long t;
 
+	/* Reset wachdog to be shure that clock calculations will be complited */
+	__raw_writel(1, wdog_dd->base + WDT0_RST);
+
+	t = sched_clock();
+	smp_send_stop();
 	nanosec_rem = do_div(t, 1000000000);
-	printk(KERN_INFO "Watchdog bark! Now = %lu.%06lu\n", (unsigned long) t,
+	console_verbose();
+	printk(KERN_EMERG "Watchdog bark! Now = %lu.%06lu\n", (unsigned long) t,
 		nanosec_rem / 1000);
 
 	nanosec_rem = do_div(wdog_dd->last_pet, 1000000000);
-	printk(KERN_INFO "Watchdog last pet at %lu.%06lu\n", (unsigned long)
+	printk(KERN_EMERG "Watchdog last pet at %lu.%06lu\n", (unsigned long)
 		wdog_dd->last_pet, nanosec_rem / 1000);
 	if (wdog_dd->do_ipi_ping)
 		dump_cpu_alive_mask(wdog_dd);
-	printk(KERN_INFO "Causing a watchdog bite!");
+	printk(KERN_EMERG "Causing a watchdog bite!");
 	__raw_writel(1, wdog_dd->base + WDT0_BITE_TIME);
 	mb();
 	__raw_writel(1, wdog_dd->base + WDT0_RST);

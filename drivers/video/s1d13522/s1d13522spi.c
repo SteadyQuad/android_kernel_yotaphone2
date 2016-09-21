@@ -203,7 +203,13 @@ static int __devexit eink3522_spi_remove(struct spi_device *spidev)
 
 static int eink3522_spi_suspend(struct spi_device *spidev, pm_message_t state)
 {
-	struct s1d13522fb_par *par = info->par;
+	struct s1d13522fb_par *par;
+
+	if (!info)
+		return 0;
+	else
+		par = info->par;
+
 	printk(KERN_INFO "%s, wakeup_count=%d\n", __func__, wakeup_count);
 	mutex_lock(&(par->io_lock));
 	if (wakeup_count) {
@@ -218,7 +224,13 @@ static int eink3522_spi_suspend(struct spi_device *spidev, pm_message_t state)
 
 static int eink3522_spi_resume(struct spi_device *spidev)
 {
-	struct s1d13522fb_par *par = info->par;
+	struct s1d13522fb_par *par;
+
+	if (!info)
+		return 0;
+	else
+		par = info->par;
+
 	printk(KERN_INFO "%s, wakeup_count=%d\n", __func__, wakeup_count);
 	mutex_lock(&(par->io_lock));
 	if (wakeup_count) {
@@ -492,7 +504,6 @@ static inline int spi_write_dma(struct spi_device *spidev,  const void *buf,  dm
 	int ret = -1;
 	struct spi_transfer	transfer = {
 		.len		= len,
-		.speed_hz	= 48000000,
 		.bits_per_word = 16,
 	};
 
@@ -562,8 +573,8 @@ void s1d13522if_BurstWrite16fb_Area(int left, int top,  int mWidth, int mHeight,
 	u8  *pfb = (u8 *)ptr16;
 	u8 *ps;
 	u16 y = 0;
-	u16 copy_length = ((mWidth+3)&~0x03)>>1;
-	u32 xpos = (left&~0x03)>>1;
+	u16 copy_length = mWidth;
+	u32 xpos = left;
 	u32 copy_location = 0;
 	u32 totalbuflen = 259200;
 	u64 mask;
@@ -575,6 +586,9 @@ void s1d13522if_BurstWrite16fb_Area(int left, int top,  int mWidth, int mHeight,
 	dbg_info("\n%s():\n", __FUNCTION__);
 	mutex_lock(&ghwMutex);
 	totalbuflen = copy_length * mHeight;
+	/* align to 16 bit word */
+	totalbuflen = (totalbuflen & 0x00001) ? totalbuflen+1 : totalbuflen;
+
 	dbg_info("[%s():%d] copy_length:%d totalbuflen:%d left: %d top: %d s1d13522_fb.fix.line_length: %d\n", __FUNCTION__, __LINE__, copy_length, totalbuflen, left, top, s1d13522_fb.fix.line_length);
 	dbg_info("[%s():%d] xpos:%d mWidth:%d mHeight:%d copy_length:%d \n",__FUNCTION__, __LINE__, xpos, mWidth, mHeight, copy_length);
 
@@ -589,8 +603,8 @@ void s1d13522if_BurstWrite16fb_Area(int left, int top,  int mWidth, int mHeight,
 	ps = (u8*) buf_for_tx;
 //	if (s1d13522_fb.var.bits_per_pixel == 4) {
 		for (y = 0; y < mHeight; y++) {
-			copy_location = ((top+y) * 270) + xpos;
-			//copy_location = ((top+y) * s1d13522_fb.fix.line_length) + xpos;
+			copy_location = ((top+y) * S1D_DISPLAY_WIDTH) + xpos;
+
 			for(cnt = 0 ; cnt < copy_length; cnt++) {
 				ps[cnti] = pfb[copy_location + cnt];
 				cnti++;
@@ -651,7 +665,7 @@ int s1d13522_init_cmdfw(unsigned ioctlcmd)
 	printk("[%s:%d] Firmware size: %d [0x%x]\n", __func__, __LINE__, firmware->size, firmware->size);
 	command(cmd);
 	GPIO_SET(GPIO_HDC, 1);
-	SPI_WRITE(s1d13522_spidev, (u16 *)firmware->data, firmware->size);
+	s1d13522if_BurstWrite16fb((u16 *)firmware->data, 0, firmware->size/2);
 	release_firmware(firmware);
 	return 0;
 }

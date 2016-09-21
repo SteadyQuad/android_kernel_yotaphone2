@@ -750,8 +750,10 @@ int cyttsp5_read_sensor_data(char const *name, char const *core_id,
 	elem_offset = 0;
 	rbuf = read_buf;
 
+        *actual_read_len = 0;
 	while(elem_count > 0) {
 		rc = d->cmd->retrieve_panel_scan(ttsp, protect, elem_offset, elem_count, data_id, response, config, &read_len, rbuf);
+                *actual_read_len += read_len;
 		if (rc < 0)
 			goto exit;
 		if (read_len <= 0)
@@ -776,6 +778,7 @@ int cyttsp5_suspend_scanning(char const *name, char const *core_id,
 	struct cyttsp5_core_driver *d;
 	int rc = -1;
 
+	pr_debug("%s\n", __func__);
 	if ((ttsp = find_device(name, core_id)) == NULL) {
 		pr_err("%s: error: can't find device %s:%s\n",
 		       __func__, name, core_id);
@@ -796,6 +799,7 @@ int cyttsp5_resume_scanning(char const *name, char const *core_id,
 	struct cyttsp5_core_driver *d;
 	int rc = -1;
 
+	pr_debug("%s\n", __func__);
 	if ((ttsp = find_device(name, core_id)) == NULL) {
 		pr_err("%s: error: can't find device %s:%s\n",
 		       __func__, name, core_id);
@@ -807,6 +811,28 @@ int cyttsp5_resume_scanning(char const *name, char const *core_id,
 	return rc;
 }
 EXPORT_SYMBOL_GPL(cyttsp5_resume_scanning);
+
+int cyttsp5_is_suspended(char const *name, char const *core_id)
+{
+	struct cyttsp5_device *ttsp;
+	struct cyttsp5_core *cd;
+	struct cyttsp5_core_driver *d;
+	int rc = -1;
+
+	if ((ttsp = find_device(name, core_id)) == NULL) {
+		pr_err("%s: error: can't find device %s:%s\n",
+		       __func__, name, core_id);
+		return -1;
+	}
+	cd = ttsp->core;
+	d = to_cyttsp5_core_driver(cd->dev.driver);
+	rc = d->cmd->is_core_suspended(ttsp);
+	pr_debug("%s, ret:%d\n", __func__, rc);
+
+	return rc;
+
+}
+EXPORT_SYMBOL_GPL(cyttsp5_is_suspended);
 
 static int __init cyttsp5_bus_init(void)
 {
